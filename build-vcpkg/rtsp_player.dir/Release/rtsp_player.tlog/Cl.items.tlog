@@ -1,7 +1,0 @@
-C:\Users\dkw\.a_dkwrtc\rtsp\src\main.cpp;C:\Users\dkw\.a_dkwrtc\rtsp\build-vcpkg\rtsp_player.dir\Release\main.obj
-C:\Users\dkw\.a_dkwrtc\rtsp\src\rtsp_client.cpp;C:\Users\dkw\.a_dkwrtc\rtsp\build-vcpkg\rtsp_player.dir\Release\rtsp_client.obj
-C:\Users\dkw\.a_dkwrtc\rtsp\src\rtp_parser.cpp;C:\Users\dkw\.a_dkwrtc\rtsp\build-vcpkg\rtsp_player.dir\Release\rtp_parser.obj
-C:\Users\dkw\.a_dkwrtc\rtsp\src\h264_depacketizer.cpp;C:\Users\dkw\.a_dkwrtc\rtsp\build-vcpkg\rtsp_player.dir\Release\h264_depacketizer.obj
-C:\Users\dkw\.a_dkwrtc\rtsp\src\jitter_buffer.cpp;C:\Users\dkw\.a_dkwrtc\rtsp\build-vcpkg\rtsp_player.dir\Release\jitter_buffer.obj
-C:\Users\dkw\.a_dkwrtc\rtsp\src\decoder.cpp;C:\Users\dkw\.a_dkwrtc\rtsp\build-vcpkg\rtsp_player.dir\Release\decoder.obj
-C:\Users\dkw\.a_dkwrtc\rtsp\src\video_renderer.cpp;C:\Users\dkw\.a_dkwrtc\rtsp\build-vcpkg\rtsp_player.dir\Release\video_renderer.obj

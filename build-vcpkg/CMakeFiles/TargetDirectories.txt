@@ -1,4 +1,0 @@
-C:/Users/dkw/.a_dkwrtc/rtsp/build-vcpkg/CMakeFiles/rtsp_player.dir
-C:/Users/dkw/.a_dkwrtc/rtsp/build-vcpkg/CMakeFiles/INSTALL.dir
-C:/Users/dkw/.a_dkwrtc/rtsp/build-vcpkg/CMakeFiles/ALL_BUILD.dir
-C:/Users/dkw/.a_dkwrtc/rtsp/build-vcpkg/CMakeFiles/ZERO_CHECK.dir
