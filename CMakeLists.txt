@@ -20,6 +20,9 @@ find_package(FFMPEG REQUIRED)
 # SDL2
 find_package(SDL2 CONFIG REQUIRED)
 
+# OpenGL
+find_package(OpenGL REQUIRED)
+
 # yaml-cpp
 find_package(yaml-cpp REQUIRED)
 
@@ -48,6 +51,7 @@ set(SOURCES
     src/jitter_buffer.cpp
     src/decoder.cpp
     src/video_renderer.cpp
+    src/opengl_video_renderer.cpp
 )
 
 set(HEADERS
@@ -69,6 +73,7 @@ target_link_libraries(rtsp_player
     Threads::Threads
     ${FFMPEG_LIBRARIES}
     $<IF:$<TARGET_EXISTS:SDL2::SDL2>,SDL2::SDL2,SDL2::SDL2-static>
+    OpenGL::GL
     yaml-cpp::yaml-cpp
     spdlog::spdlog
 )

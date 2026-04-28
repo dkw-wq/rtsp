@@ -14,3 +14,6 @@ jitter_buffer:
 
 # 日志级别: trace, debug, info, warn, error, critical
 log_level: "info"
+
+# 渲染后端: sdl, opengl
+renderer: "opengl"

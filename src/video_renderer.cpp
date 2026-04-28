@@ -7,7 +7,36 @@ extern "C" {
 
 namespace rtsp {
 
-VideoRenderer::VideoRenderer()
+namespace {
+
+class SdlVideoRenderer final : public VideoRenderer {
+public:
+    SdlVideoRenderer();
+    ~SdlVideoRenderer() override;
+
+    bool initialize(int width, int height, const std::string& title) override;
+    bool render(const std::shared_ptr<MediaFrame>& frame) override;
+    bool handleEvents() override;
+    void close() override;
+
+    int getWidth() const override;
+    int getHeight() const override;
+    bool isInitialized() const override;
+
+private:
+    bool renderYuv(const uint8_t* y, const uint8_t* u, const uint8_t* v,
+                   int width, int height);
+
+    SDL_Window* window_;
+    SDL_Renderer* renderer_;
+    SDL_Texture* texture_;
+
+    int width_;
+    int height_;
+    bool initialized_;
+};
+
+SdlVideoRenderer::SdlVideoRenderer()
     : window_(nullptr)
     , renderer_(nullptr)
     , texture_(nullptr)
@@ -16,11 +45,11 @@ VideoRenderer::VideoRenderer()
     , initialized_(false)
 {}
 
-VideoRenderer::~VideoRenderer() {
+SdlVideoRenderer::~SdlVideoRenderer() {
     close();
 }
 
-bool VideoRenderer::initialize(int width, int height, const std::string& title) {
+bool SdlVideoRenderer::initialize(int width, int height, const std::string& title) {
     close();
 
     width_ = width;
@@ -90,7 +119,7 @@ bool VideoRenderer::initialize(int width, int height, const std::string& title) 
     return true;
 }
 
-bool VideoRenderer::render(const std::shared_ptr<MediaFrame>& frame) {
+bool SdlVideoRenderer::render(const std::shared_ptr<MediaFrame>& frame) {
     if (!initialized_ || !frame) {
         return false;
     }
@@ -104,8 +133,8 @@ bool VideoRenderer::render(const std::shared_ptr<MediaFrame>& frame) {
     );
 }
 
-bool VideoRenderer::renderYuv(const uint8_t* y, const uint8_t* u, const uint8_t* v,
-                               int width, int height) {
+bool SdlVideoRenderer::renderYuv(const uint8_t* y, const uint8_t* u, const uint8_t* v,
+                                 int width, int height) {
     if (!initialized_ || !y || !u || !v) {
         return false;
     }
@@ -146,7 +175,7 @@ bool VideoRenderer::renderYuv(const uint8_t* y, const uint8_t* u, const uint8_t*
     return true;
 }
 
-bool VideoRenderer::handleEvents() {
+bool SdlVideoRenderer::handleEvents() {
     SDL_Event event;
     
     while (SDL_PollEvent(&event)) {
@@ -167,7 +196,7 @@ bool VideoRenderer::handleEvents() {
     return true;
 }
 
-void VideoRenderer::close() {
+void SdlVideoRenderer::close() {
     if (texture_) {
         SDL_DestroyTexture(texture_);
         texture_ = nullptr;
@@ -190,8 +219,14 @@ void VideoRenderer::close() {
     height_ = 0;
 }
 
-int VideoRenderer::getWidth() const { return width_; }
-int VideoRenderer::getHeight() const { return height_; }
-bool VideoRenderer::isInitialized() const { return initialized_; }
+int SdlVideoRenderer::getWidth() const { return width_; }
+int SdlVideoRenderer::getHeight() const { return height_; }
+bool SdlVideoRenderer::isInitialized() const { return initialized_; }
+
+} // namespace
+
+std::unique_ptr<VideoRenderer> createSdlVideoRenderer() {
+    return std::make_unique<SdlVideoRenderer>();
+}
 
 } // namespace rtsp

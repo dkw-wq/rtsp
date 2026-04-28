@@ -22,6 +22,11 @@ bool JitterBuffer::push(const std::shared_ptr<MediaFrame>& frame) {
 
     std::unique_lock<std::mutex> lock(mutex_);
 
+    if (frame->recvTime.count() == 0) {
+        frame->recvTime = std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now().time_since_epoch());
+    }
+
     // 如果缓冲区已满，丢弃最旧的帧
     if (buffer_.size() >= maxSize_) {
         buffer_.pop();
@@ -74,8 +79,13 @@ bool JitterBuffer::shouldRelease(const std::shared_ptr<MediaFrame>& frame) const
         return true;
     }
 
-    // 等待缓冲区积累一定数量的帧
-    return buffer_.size() >= (maxSize_ / 3);
+    const auto now = std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::steady_clock::now().time_since_epoch());
+    const auto bufferedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+        now - frame->recvTime).count();
+
+    // 达到配置延迟后释放；缓冲积累过多时也释放，避免越积越慢
+    return bufferedMs >= latencyMs_ || buffer_.size() >= (maxSize_ / 3);
 }
 
 void JitterBuffer::clear() {

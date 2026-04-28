@@ -5,20 +5,15 @@
 #include <string>
 #include "jitter_buffer.hpp"
 
-extern "C" {
-#include <SDL2/SDL.h>
-}
-
 namespace rtsp {
 
 /**
  * @brief 视频渲染器
- * @note 使用SDL2渲染解码后的视频帧
+ * @note 渲染后端接口，当前默认实现位于video_renderer.cpp中的SDL2后端
  */
 class VideoRenderer {
 public:
-    VideoRenderer();
-    ~VideoRenderer();
+    virtual ~VideoRenderer() = default;
 
     /**
      * @brief 初始化渲染器
@@ -27,60 +22,44 @@ public:
      * @param title 窗口标题
      * @return true if initialized successfully
      */
-    bool initialize(int width, int height, const std::string& title = "RTSP Player");
+    virtual bool initialize(int width, int height,
+                            const std::string& title = "RTSP Player") = 0;
 
     /**
      * @brief 渲染帧
      * @param frame 媒体帧
      * @return true if rendered successfully
      */
-    bool render(const std::shared_ptr<MediaFrame>& frame);
-
-    /**
-     * @brief 渲染YUV数据
-     * @param y Y分量数据
-     * @param u U分量数据
-     * @param v V分量数据
-     * @param width 宽度
-     * @param height 高度
-     */
-    bool renderYuv(const uint8_t* y, const uint8_t* u, const uint8_t* v,
-                    int width, int height);
+    virtual bool render(const std::shared_ptr<MediaFrame>& frame) = 0;
 
     /**
      * @brief 处理SDL事件
      * @return false if should quit
      */
-    bool handleEvents();
+    virtual bool handleEvents() = 0;
 
     /**
      * @brief 关闭渲染器
      */
-    void close();
+    virtual void close() = 0;
 
     /**
      * @brief 获取窗口宽度
      */
-    int getWidth() const;
+    virtual int getWidth() const = 0;
 
     /**
      * @brief 获取窗口高度
      */
-    int getHeight() const;
+    virtual int getHeight() const = 0;
 
     /**
      * @brief 检查是否已初始化
      */
-    bool isInitialized() const;
-
-private:
-    SDL_Window* window_;
-    SDL_Renderer* renderer_;
-    SDL_Texture* texture_;
-
-    int width_;
-    int height_;
-    bool initialized_;
+    virtual bool isInitialized() const = 0;
 };
+
+std::unique_ptr<VideoRenderer> createSdlVideoRenderer();
+std::unique_ptr<VideoRenderer> createOpenGlVideoRenderer();
 
 } // namespace rtsp

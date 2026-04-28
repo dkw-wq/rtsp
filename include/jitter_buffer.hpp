@@ -35,6 +35,7 @@ struct MediaFrame {
         , pts(0)
         , dts(0)
         , keyFrame(false)
+        , recvTime(0)
     {}
 };
 

@@ -1,5 +1,4 @@
 #include "rtsp_client.hpp"
-#include "decoder.hpp"
 #include "video_renderer.hpp"
 #include "jitter_buffer.hpp"
 
@@ -11,21 +10,60 @@
 #include <string>
 #include <thread>
 #include <chrono>
+#include <cctype>
+#include <cstdint>
+
+namespace {
+
+std::string toLower(std::string value) {
+    for (char& ch : value) {
+        ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+    }
+    return value;
+}
+
+bool parseLogLevel(const std::string& value, spdlog::level::level_enum& level) {
+    const std::string normalized = toLower(value);
+
+    if (normalized == "trace") {
+        level = spdlog::level::trace;
+    } else if (normalized == "debug") {
+        level = spdlog::level::debug;
+    } else if (normalized == "info") {
+        level = spdlog::level::info;
+    } else if (normalized == "warn" || normalized == "warning") {
+        level = spdlog::level::warn;
+    } else if (normalized == "error") {
+        level = spdlog::level::err;
+    } else if (normalized == "critical") {
+        level = spdlog::level::critical;
+    } else if (normalized == "off") {
+        level = spdlog::level::off;
+    } else {
+        return false;
+    }
+
+    return true;
+}
+
+} // namespace
 
 // 全局变量用于控制主循环
 static bool g_running = true;
 
 int main(int argc, char* argv[]) {
     // 设置日志
-    spdlog::set_level(spdlog::level::info);
     spdlog::set_pattern("[%Y-%m-%d %H:%M:%S.%e] [%^%l%$] %v");
-
-    SPDLOG_INFO("RTSP Player starting...");
 
     // 加载配置
     std::string rtspUrl = "rtsp://127.0.0.1:8554/webcam";
     int width = 1920;
     int height = 1080;
+    std::string logLevelName = "info";
+    std::string rendererName = "sdl";
+    size_t jitterMaxSize = 30;
+    uint32_t jitterLatencyMs = 100;
+    std::string configWarning;
 
     // 尝试加载配置文件
     try {
@@ -39,8 +77,40 @@ int main(int argc, char* argv[]) {
         if (config["height"]) {
             height = config["height"].as<int>();
         }
+        if (config["log_level"]) {
+            logLevelName = config["log_level"].as<std::string>();
+        }
+        if (config["renderer"]) {
+            rendererName = config["renderer"].as<std::string>();
+        }
+        if (config["jitter_buffer"]) {
+            const auto jitterConfig = config["jitter_buffer"];
+            if (jitterConfig["max_size"]) {
+                int configuredMaxSize = jitterConfig["max_size"].as<int>();
+                if (configuredMaxSize > 0) {
+                    jitterMaxSize = static_cast<size_t>(configuredMaxSize);
+                }
+            }
+            if (jitterConfig["latency_ms"]) {
+                int configuredLatencyMs = jitterConfig["latency_ms"].as<int>();
+                if (configuredLatencyMs >= 0) {
+                    jitterLatencyMs = static_cast<uint32_t>(configuredLatencyMs);
+                }
+            }
+        }
     } catch (const std::exception& e) {
-        SPDLOG_WARN("Config file not found, using default: {}", e.what());
+        configWarning = e.what();
+    }
+
+    spdlog::level::level_enum parsedLogLevel = spdlog::level::info;
+    if (!parseLogLevel(logLevelName, parsedLogLevel)) {
+        SPDLOG_WARN("Unknown log level '{}', using info", logLevelName);
+    }
+    spdlog::set_level(parsedLogLevel);
+
+    SPDLOG_INFO("RTSP Player starting...");
+    if (!configWarning.empty()) {
+        SPDLOG_WARN("Config file not found or invalid, using defaults: {}", configWarning);
     }
 
     // 如果有命令行参数，使用命令行参数
@@ -49,11 +119,22 @@ int main(int argc, char* argv[]) {
     }
 
     SPDLOG_INFO("RTSP URL: {}", rtspUrl);
+    SPDLOG_INFO("Renderer backend: {}", rendererName);
+    SPDLOG_INFO("Jitter buffer: max_size={}, latency_ms={}", jitterMaxSize, jitterLatencyMs);
 
     // 创建组件
     auto rtspClient = std::make_unique<rtsp::RtspClient>();
-    auto jitterBuffer = std::make_unique<rtsp::JitterBuffer>(30, 100);
-    auto renderer = std::make_unique<rtsp::VideoRenderer>();
+    auto jitterBuffer = std::make_unique<rtsp::JitterBuffer>(jitterMaxSize, jitterLatencyMs);
+    std::unique_ptr<rtsp::VideoRenderer> renderer;
+    const std::string rendererBackend = toLower(rendererName);
+    if (rendererBackend == "opengl" || rendererBackend == "gl") {
+        renderer = rtsp::createOpenGlVideoRenderer();
+    } else {
+        if (rendererBackend != "sdl") {
+            SPDLOG_WARN("Unknown renderer backend '{}', using sdl", rendererName);
+        }
+        renderer = rtsp::createSdlVideoRenderer();
+    }
 
     // 设置帧回调
     rtspClient->setFrameCallback([&jitterBuffer](const std::shared_ptr<rtsp::MediaFrame>& frame) {

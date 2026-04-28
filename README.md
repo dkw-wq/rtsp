@@ -2,8 +2,17 @@ cd C:\Users\dkw\.a_dkwrtc\rtsp
 
 D:\vcpkg\vcpkg.exe install ffmpeg:x64-windows sdl2:x64-windows yaml-cpp:x64-windows spdlog:x64-windows
 
-cmake -S . -B build-vcpkg -DCMAKE_TOOLCHAIN_FILE=D:/vcpkg/scripts/buildsystems/vcpkg.cmake
-cmake --build build-vcpkg --config Release
+.\scripts\build.ps1
+
+只重新构建：
+
+.\scripts\build.ps1 -SkipConfigure
+
+切换 OpenGL 渲染：
+
+编辑 config\config.yaml：
+
+renderer: "opengl"
 
 
 启动时传真实 RTSP 地址：
