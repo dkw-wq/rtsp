@@ -1,0 +1,197 @@
+#include "video_renderer.hpp"
+#include <spdlog/spdlog.h>
+
+extern "C" {
+#include <SDL2/SDL.h>
+}
+
+namespace rtsp {
+
+VideoRenderer::VideoRenderer()
+    : window_(nullptr)
+    , renderer_(nullptr)
+    , texture_(nullptr)
+    , width_(0)
+    , height_(0)
+    , initialized_(false)
+{}
+
+VideoRenderer::~VideoRenderer() {
+    close();
+}
+
+bool VideoRenderer::initialize(int width, int height, const std::string& title) {
+    close();
+
+    width_ = width;
+    height_ = height;
+
+    // 初始化SDL
+    if (SDL_Init(SDL_INIT_VIDEO) < 0) {
+        SPDLOG_ERROR("SDL_Init failed: {}", SDL_GetError());
+        return false;
+    }
+
+    // 创建窗口
+    window_ = SDL_CreateWindow(
+        title.c_str(),
+        SDL_WINDOWPOS_CENTERED,
+        SDL_WINDOWPOS_CENTERED,
+        width,
+        height,
+        SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE
+    );
+
+    if (!window_) {
+        SPDLOG_ERROR("Failed to create window: {}", SDL_GetError());
+        SDL_Quit();
+        return false;
+    }
+
+    // 创建渲染器
+    renderer_ = SDL_CreateRenderer(
+        window_,
+        -1,
+        SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC
+    );
+
+    if (!renderer_) {
+        SPDLOG_ERROR("Failed to create renderer: {}", SDL_GetError());
+        SDL_DestroyWindow(window_);
+        window_ = nullptr;
+        SDL_Quit();
+        return false;
+    }
+
+    // 创建YUV纹理
+    texture_ = SDL_CreateTexture(
+        renderer_,
+        SDL_PIXELFORMAT_YV12,
+        SDL_TEXTUREACCESS_STREAMING,
+        width,
+        height
+    );
+
+    if (!texture_) {
+        SPDLOG_ERROR("Failed to create texture: {}", SDL_GetError());
+        SDL_DestroyRenderer(renderer_);
+        renderer_ = nullptr;
+        SDL_DestroyWindow(window_);
+        window_ = nullptr;
+        SDL_Quit();
+        return false;
+    }
+
+    // 设置渲染器颜色
+    SDL_SetRenderDrawColor(renderer_, 0, 0, 0, 255);
+
+    initialized_ = true;
+    SPDLOG_INFO("Video renderer initialized: {}x{}", width, height);
+    return true;
+}
+
+bool VideoRenderer::render(const std::shared_ptr<MediaFrame>& frame) {
+    if (!initialized_ || !frame) {
+        return false;
+    }
+
+    return renderYuv(
+        frame->data.data(),
+        frame->data.data() + frame->width * frame->height,
+        frame->data.data() + frame->width * frame->height * 5 / 4,
+        frame->width,
+        frame->height
+    );
+}
+
+bool VideoRenderer::renderYuv(const uint8_t* y, const uint8_t* u, const uint8_t* v,
+                               int width, int height) {
+    if (!initialized_ || !y || !u || !v) {
+        return false;
+    }
+
+    if (width != width_ || height != height_) {
+        SPDLOG_ERROR("Frame size {}x{} does not match texture size {}x{}",
+                     width, height, width_, height_);
+        return false;
+    }
+
+    // 更新纹理
+    int pitch = width;
+    int ret = SDL_UpdateYUVTexture(
+        texture_,
+        nullptr,
+        y,
+        pitch,
+        u,
+        pitch / 2,
+        v,
+        pitch / 2
+    );
+
+    if (ret < 0) {
+        SPDLOG_ERROR("SDL_UpdateYUVTexture failed: {}", SDL_GetError());
+        return false;
+    }
+
+    // 清除渲染器
+    SDL_RenderClear(renderer_);
+
+    // 复制纹理到渲染器
+    SDL_RenderCopy(renderer_, texture_, nullptr, nullptr);
+
+    // 渲染
+    SDL_RenderPresent(renderer_);
+
+    return true;
+}
+
+bool VideoRenderer::handleEvents() {
+    SDL_Event event;
+    
+    while (SDL_PollEvent(&event)) {
+        switch (event.type) {
+            case SDL_QUIT:
+                return false;
+            case SDL_KEYDOWN:
+                if (event.key.keysym.sym == SDLK_ESCAPE ||
+                    event.key.keysym.sym == SDLK_q) {
+                    return false;
+                }
+                break;
+            default:
+                break;
+        }
+    }
+
+    return true;
+}
+
+void VideoRenderer::close() {
+    if (texture_) {
+        SDL_DestroyTexture(texture_);
+        texture_ = nullptr;
+    }
+
+    if (renderer_) {
+        SDL_DestroyRenderer(renderer_);
+        renderer_ = nullptr;
+    }
+
+    if (window_) {
+        SDL_DestroyWindow(window_);
+        window_ = nullptr;
+    }
+
+    SDL_Quit();
+
+    initialized_ = false;
+    width_ = 0;
+    height_ = 0;
+}
+
+int VideoRenderer::getWidth() const { return width_; }
+int VideoRenderer::getHeight() const { return height_; }
+bool VideoRenderer::isInitialized() const { return initialized_; }
+
+} // namespace rtsp

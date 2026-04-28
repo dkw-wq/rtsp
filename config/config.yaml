@@ -1,0 +1,16 @@
+# RTSP Player Configuration
+
+# RTSP流地址
+rtsp_url: "rtsp://127.0.0.1:8554/webcam"
+
+# 视频参数 (通常由RTSP流自动检测，这里仅作默认值)
+width: 1920
+height: 1080
+
+# Jitter Buffer设置
+jitter_buffer:
+  max_size: 30      # 最大缓冲帧数
+  latency_ms: 100  # 目标延迟(毫秒)
+
+# 日志级别: trace, debug, info, warn, error, critical
+log_level: "info"

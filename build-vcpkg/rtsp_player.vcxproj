@@ -1,0 +1,466 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" ToolsVersion="17.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup>
+    <PreferredToolArchitecture>x64</PreferredToolArchitecture>
+  </PropertyGroup>
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|x64">
+      <Configuration>Debug</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="MinSizeRel|x64">
+      <Configuration>MinSizeRel</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="RelWithDebInfo|x64">
+      <Configuration>RelWithDebInfo</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <ProjectGuid>{B508C503-FAAC-390C-B24B-A0C0D912C5B8}</ProjectGuid>
+    <Keyword>Win32Proj</Keyword>
+    <VcpkgEnabled>false</VcpkgEnabled>
+    <WindowsTargetPlatformVersion>10.0.26100.0</WindowsTargetPlatformVersion>
+    <Platform>x64</Platform>
+    <ProjectName>rtsp_player</ProjectName>
+    <VCProjectUpgraderObjectName>NoUpgrade</VCProjectUpgraderObjectName>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <CharacterSet>MultiByte</CharacterSet>
+    <PlatformToolset>v143</PlatformToolset>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <CharacterSet>MultiByte</CharacterSet>
+    <PlatformToolset>v143</PlatformToolset>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <CharacterSet>MultiByte</CharacterSet>
+    <PlatformToolset>v143</PlatformToolset>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <CharacterSet>MultiByte</CharacterSet>
+    <PlatformToolset>v143</PlatformToolset>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <ImportGroup Label="ExtensionSettings">
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets">
+    <Import Project="do_not_import_user.props" Condition="exists('do_not_import_user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <PropertyGroup Label="UserMacros" />
+  <PropertyGroup>
+    <_ProjectFileVersion>10.0.20506.1</_ProjectFileVersion>
+    <OutDir Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">C:\Users\dkw\.a_dkwrtc\rtsp\build-vcpkg\bin\Debug\</OutDir>
+    <IntDir Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">rtsp_player.dir\Debug\</IntDir>
+    <TargetName Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">rtsp_player</TargetName>
+    <TargetExt Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">.exe</TargetExt>
+    <LinkIncremental Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</LinkIncremental>
+    <GenerateManifest Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</GenerateManifest>
+    <OutDir Condition="'$(Configuration)|$(Platform)'=='Release|x64'">C:\Users\dkw\.a_dkwrtc\rtsp\build-vcpkg\bin\Release\</OutDir>
+    <IntDir Condition="'$(Configuration)|$(Platform)'=='Release|x64'">rtsp_player.dir\Release\</IntDir>
+    <TargetName Condition="'$(Configuration)|$(Platform)'=='Release|x64'">rtsp_player</TargetName>
+    <TargetExt Condition="'$(Configuration)|$(Platform)'=='Release|x64'">.exe</TargetExt>
+    <LinkIncremental Condition="'$(Configuration)|$(Platform)'=='Release|x64'">false</LinkIncremental>
+    <GenerateManifest Condition="'$(Configuration)|$(Platform)'=='Release|x64'">true</GenerateManifest>
+    <OutDir Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">C:\Users\dkw\.a_dkwrtc\rtsp\build-vcpkg\bin\MinSizeRel\</OutDir>
+    <IntDir Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">rtsp_player.dir\MinSizeRel\</IntDir>
+    <TargetName Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">rtsp_player</TargetName>
+    <TargetExt Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">.exe</TargetExt>
+    <LinkIncremental Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">false</LinkIncremental>
+    <GenerateManifest Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">true</GenerateManifest>
+    <OutDir Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">C:\Users\dkw\.a_dkwrtc\rtsp\build-vcpkg\bin\RelWithDebInfo\</OutDir>
+    <IntDir Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">rtsp_player.dir\RelWithDebInfo\</IntDir>
+    <TargetName Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">rtsp_player</TargetName>
+    <TargetExt Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">.exe</TargetExt>
+    <LinkIncremental Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">true</LinkIncremental>
+    <GenerateManifest Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">true</GenerateManifest>
+  </PropertyGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <ClCompile>
+      <AdditionalIncludeDirectories>C:\Users\dkw\.a_dkwrtc\rtsp\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalOptions>%(AdditionalOptions) /external:I "D:/vcpkg/installed/x64-windows/debug/../include" /external:I "D:/vcpkg/installed/x64-windows/debug/../include/srt" /external:I "D:/vcpkg/installed/x64-windows/include" /external:I "D:/vcpkg/installed/x64-windows/include/SDL2" /utf-8</AdditionalOptions>
+      <AssemblerListingLocation>$(IntDir)</AssemblerListingLocation>
+      <BasicRuntimeChecks>EnableFastChecks</BasicRuntimeChecks>
+      <BufferSecurityCheck></BufferSecurityCheck>
+      <CallingConvention></CallingConvention>
+      <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
+      <DisableSpecificWarnings>4251;4275</DisableSpecificWarnings>
+      <ExceptionHandling>Sync</ExceptionHandling>
+      <ExternalWarningLevel>TurnOffAllWarnings</ExternalWarningLevel>
+      <FloatingPointModel></FloatingPointModel>
+      <ForceConformanceInForLoopScope></ForceConformanceInForLoopScope>
+      <InlineFunctionExpansion>Disabled</InlineFunctionExpansion>
+      <LanguageStandard>stdcpp20</LanguageStandard>
+      <MinimalRebuild></MinimalRebuild>
+      <Optimization>Disabled</Optimization>
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <RemoveUnreferencedCodeData></RemoveUnreferencedCodeData>
+      <RuntimeLibrary>MultiThreadedDebugDLL</RuntimeLibrary>
+      <RuntimeTypeInfo>true</RuntimeTypeInfo>
+      <SupportJustMyCode></SupportJustMyCode>
+      <TreatWChar_tAsBuiltInType></TreatWChar_tAsBuiltInType>
+      <TreatWarningAsError>true</TreatWarningAsError>
+      <UseFullPaths>false</UseFullPaths>
+      <WarningLevel>Level4</WarningLevel>
+      <PreprocessorDefinitions>%(PreprocessorDefinitions);WIN32;_WINDOWS;SDL_MAIN_HANDLED;SPDLOG_SHARED_LIB;SPDLOG_COMPILED_LIB;SPDLOG_FMT_EXTERNAL;FMT_SHARED;CMAKE_INTDIR="Debug"</PreprocessorDefinitions>
+      <ObjectFileName>$(IntDir)</ObjectFileName>
+      <ScanSourceForModuleDependencies>false</ScanSourceForModuleDependencies>
+    </ClCompile>
+    <ResourceCompile>
+      <PreprocessorDefinitions>%(PreprocessorDefinitions);WIN32;_DEBUG;_WINDOWS;SDL_MAIN_HANDLED;SPDLOG_SHARED_LIB;SPDLOG_COMPILED_LIB;SPDLOG_FMT_EXTERNAL;FMT_SHARED;CMAKE_INTDIR=\"Debug\"</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>C:\Users\dkw\.a_dkwrtc\rtsp\include;D:\vcpkg\installed\x64-windows\debug\..\include;D:\vcpkg\installed\x64-windows\debug\..\include\srt;D:\vcpkg\installed\x64-windows\include;D:\vcpkg\installed\x64-windows\include\SDL2;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ResourceCompile>
+    <Midl>
+      <AdditionalIncludeDirectories>C:\Users\dkw\.a_dkwrtc\rtsp\include;D:\vcpkg\installed\x64-windows\debug\..\include;D:\vcpkg\installed\x64-windows\debug\..\include\srt;D:\vcpkg\installed\x64-windows\include;D:\vcpkg\installed\x64-windows\include\SDL2;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <OutputDirectory>$(ProjectDir)/$(IntDir)</OutputDirectory>
+      <HeaderFileName>%(Filename).h</HeaderFileName>
+      <TypeLibraryName>%(Filename).tlb</TypeLibraryName>
+      <InterfaceIdentifierFileName>%(Filename)_i.c</InterfaceIdentifierFileName>
+      <ProxyFileName>%(Filename)_p.c</ProxyFileName>
+    </Midl>
+    <PostBuildEvent>
+      <Message></Message>
+      <Command>setlocal
+C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe -noprofile -executionpolicy Bypass -file D:/vcpkg/scripts/buildsystems/msbuild/applocal.ps1 -targetBinary C:/Users/dkw/.a_dkwrtc/rtsp/build-vcpkg/bin/Debug/rtsp_player.exe -installedDir D:/vcpkg/installed/x64-windows/debug/bin -OutVariable out
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal &amp; call :cmErrorLevel %errorlevel% &amp; goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd</Command>
+    </PostBuildEvent>
+    <Link>
+      <AdditionalDependencies>avformat.lib;avcodec.lib;swscale.lib;swresample.lib;avutil.lib;D:\vcpkg\installed\x64-windows\debug\lib\SDL2d.lib;D:\vcpkg\installed\x64-windows\debug\lib\yaml-cppd.lib;D:\vcpkg\installed\x64-windows\debug\lib\spdlogd.lib;D:\vcpkg\installed\x64-windows\debug\lib\srt.lib;D:\vcpkg\installed\x64-windows\debug\lib\fmtd.lib;kernel32.lib;user32.lib;gdi32.lib;winspool.lib;shell32.lib;ole32.lib;oleaut32.lib;uuid.lib;comdlg32.lib;advapi32.lib</AdditionalDependencies>
+      <AdditionalLibraryDirectories>D:/vcpkg/installed/x64-windows/debug/lib;D:/vcpkg/installed/x64-windows/debug/lib/$(Configuration);%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalOptions>%(AdditionalOptions) /machine:x64</AdditionalOptions>
+      <DataExecutionPrevention></DataExecutionPrevention>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+      <IgnoreSpecificDefaultLibraries>%(IgnoreSpecificDefaultLibraries)</IgnoreSpecificDefaultLibraries>
+      <ImageHasSafeExceptionHandlers></ImageHasSafeExceptionHandlers>
+      <ImportLibrary>C:/Users/dkw/.a_dkwrtc/rtsp/build-vcpkg/obj/Debug/rtsp_player.lib</ImportLibrary>
+      <LinkErrorReporting></LinkErrorReporting>
+      <ProgramDataBaseFile>C:/Users/dkw/.a_dkwrtc/rtsp/build-vcpkg/bin/Debug/rtsp_player.pdb</ProgramDataBaseFile>
+      <RandomizedBaseAddress></RandomizedBaseAddress>
+      <SubSystem>Console</SubSystem>
+    </Link>
+    <ProjectReference>
+      <LinkLibraryDependencies>false</LinkLibraryDependencies>
+    </ProjectReference>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <ClCompile>
+      <AdditionalIncludeDirectories>C:\Users\dkw\.a_dkwrtc\rtsp\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalOptions>%(AdditionalOptions) /external:I "D:/vcpkg/installed/x64-windows/debug/../include" /external:I "D:/vcpkg/installed/x64-windows/debug/../include/srt" /external:I "D:/vcpkg/installed/x64-windows/include" /external:I "D:/vcpkg/installed/x64-windows/include/SDL2" /utf-8</AdditionalOptions>
+      <AssemblerListingLocation>$(IntDir)</AssemblerListingLocation>
+      <BasicRuntimeChecks>Default</BasicRuntimeChecks>
+      <BufferSecurityCheck></BufferSecurityCheck>
+      <CallingConvention></CallingConvention>
+      <DisableSpecificWarnings>4251;4275</DisableSpecificWarnings>
+      <ExceptionHandling>Sync</ExceptionHandling>
+      <ExternalWarningLevel>TurnOffAllWarnings</ExternalWarningLevel>
+      <FloatingPointModel></FloatingPointModel>
+      <ForceConformanceInForLoopScope></ForceConformanceInForLoopScope>
+      <InlineFunctionExpansion>AnySuitable</InlineFunctionExpansion>
+      <LanguageStandard>stdcpp20</LanguageStandard>
+      <MinimalRebuild></MinimalRebuild>
+      <Optimization>MaxSpeed</Optimization>
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <RemoveUnreferencedCodeData></RemoveUnreferencedCodeData>
+      <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
+      <RuntimeTypeInfo>true</RuntimeTypeInfo>
+      <SupportJustMyCode></SupportJustMyCode>
+      <TreatWChar_tAsBuiltInType></TreatWChar_tAsBuiltInType>
+      <TreatWarningAsError>true</TreatWarningAsError>
+      <UseFullPaths>false</UseFullPaths>
+      <WarningLevel>Level4</WarningLevel>
+      <PreprocessorDefinitions>%(PreprocessorDefinitions);WIN32;_WINDOWS;NDEBUG;SDL_MAIN_HANDLED;SPDLOG_SHARED_LIB;SPDLOG_COMPILED_LIB;SPDLOG_FMT_EXTERNAL;FMT_SHARED;CMAKE_INTDIR="Release"</PreprocessorDefinitions>
+      <ObjectFileName>$(IntDir)</ObjectFileName>
+      <DebugInformationFormat>
+      </DebugInformationFormat>
+      <ScanSourceForModuleDependencies>false</ScanSourceForModuleDependencies>
+    </ClCompile>
+    <ResourceCompile>
+      <PreprocessorDefinitions>%(PreprocessorDefinitions);WIN32;_WINDOWS;NDEBUG;SDL_MAIN_HANDLED;SPDLOG_SHARED_LIB;SPDLOG_COMPILED_LIB;SPDLOG_FMT_EXTERNAL;FMT_SHARED;CMAKE_INTDIR=\"Release\"</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>C:\Users\dkw\.a_dkwrtc\rtsp\include;D:\vcpkg\installed\x64-windows\debug\..\include;D:\vcpkg\installed\x64-windows\debug\..\include\srt;D:\vcpkg\installed\x64-windows\include;D:\vcpkg\installed\x64-windows\include\SDL2;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ResourceCompile>
+    <Midl>
+      <AdditionalIncludeDirectories>C:\Users\dkw\.a_dkwrtc\rtsp\include;D:\vcpkg\installed\x64-windows\debug\..\include;D:\vcpkg\installed\x64-windows\debug\..\include\srt;D:\vcpkg\installed\x64-windows\include;D:\vcpkg\installed\x64-windows\include\SDL2;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <OutputDirectory>$(ProjectDir)/$(IntDir)</OutputDirectory>
+      <HeaderFileName>%(Filename).h</HeaderFileName>
+      <TypeLibraryName>%(Filename).tlb</TypeLibraryName>
+      <InterfaceIdentifierFileName>%(Filename)_i.c</InterfaceIdentifierFileName>
+      <ProxyFileName>%(Filename)_p.c</ProxyFileName>
+    </Midl>
+    <PostBuildEvent>
+      <Message></Message>
+      <Command>setlocal
+C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe -noprofile -executionpolicy Bypass -file D:/vcpkg/scripts/buildsystems/msbuild/applocal.ps1 -targetBinary C:/Users/dkw/.a_dkwrtc/rtsp/build-vcpkg/bin/Release/rtsp_player.exe -installedDir D:/vcpkg/installed/x64-windows/bin -OutVariable out
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal &amp; call :cmErrorLevel %errorlevel% &amp; goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd</Command>
+    </PostBuildEvent>
+    <Link>
+      <AdditionalDependencies>avformat.lib;avcodec.lib;swscale.lib;swresample.lib;avutil.lib;D:\vcpkg\installed\x64-windows\lib\SDL2.lib;D:\vcpkg\installed\x64-windows\lib\yaml-cpp.lib;D:\vcpkg\installed\x64-windows\lib\spdlog.lib;D:\vcpkg\installed\x64-windows\debug\lib\srt.lib;D:\vcpkg\installed\x64-windows\lib\fmt.lib;kernel32.lib;user32.lib;gdi32.lib;winspool.lib;shell32.lib;ole32.lib;oleaut32.lib;uuid.lib;comdlg32.lib;advapi32.lib</AdditionalDependencies>
+      <AdditionalLibraryDirectories>D:/vcpkg/installed/x64-windows/debug/lib;D:/vcpkg/installed/x64-windows/debug/lib/$(Configuration);%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalOptions>%(AdditionalOptions) /machine:x64</AdditionalOptions>
+      <DataExecutionPrevention></DataExecutionPrevention>
+      <GenerateDebugInformation>false</GenerateDebugInformation>
+      <IgnoreSpecificDefaultLibraries>%(IgnoreSpecificDefaultLibraries)</IgnoreSpecificDefaultLibraries>
+      <ImageHasSafeExceptionHandlers></ImageHasSafeExceptionHandlers>
+      <ImportLibrary>C:/Users/dkw/.a_dkwrtc/rtsp/build-vcpkg/obj/Release/rtsp_player.lib</ImportLibrary>
+      <LinkErrorReporting></LinkErrorReporting>
+      <ProgramDataBaseFile>C:/Users/dkw/.a_dkwrtc/rtsp/build-vcpkg/bin/Release/rtsp_player.pdb</ProgramDataBaseFile>
+      <RandomizedBaseAddress></RandomizedBaseAddress>
+      <SubSystem>Console</SubSystem>
+    </Link>
+    <ProjectReference>
+      <LinkLibraryDependencies>false</LinkLibraryDependencies>
+    </ProjectReference>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">
+    <ClCompile>
+      <AdditionalIncludeDirectories>C:\Users\dkw\.a_dkwrtc\rtsp\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalOptions>%(AdditionalOptions) /external:I "D:/vcpkg/installed/x64-windows/debug/../include" /external:I "D:/vcpkg/installed/x64-windows/debug/../include/srt" /external:I "D:/vcpkg/installed/x64-windows/include" /external:I "D:/vcpkg/installed/x64-windows/include/SDL2" /utf-8</AdditionalOptions>
+      <AssemblerListingLocation>$(IntDir)</AssemblerListingLocation>
+      <BasicRuntimeChecks>Default</BasicRuntimeChecks>
+      <BufferSecurityCheck></BufferSecurityCheck>
+      <CallingConvention></CallingConvention>
+      <DisableSpecificWarnings>4251;4275</DisableSpecificWarnings>
+      <ExceptionHandling>Sync</ExceptionHandling>
+      <ExternalWarningLevel>TurnOffAllWarnings</ExternalWarningLevel>
+      <FloatingPointModel></FloatingPointModel>
+      <ForceConformanceInForLoopScope></ForceConformanceInForLoopScope>
+      <InlineFunctionExpansion>OnlyExplicitInline</InlineFunctionExpansion>
+      <LanguageStandard>stdcpp20</LanguageStandard>
+      <MinimalRebuild></MinimalRebuild>
+      <Optimization>MinSpace</Optimization>
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <RemoveUnreferencedCodeData></RemoveUnreferencedCodeData>
+      <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
+      <RuntimeTypeInfo>true</RuntimeTypeInfo>
+      <SupportJustMyCode></SupportJustMyCode>
+      <TreatWChar_tAsBuiltInType></TreatWChar_tAsBuiltInType>
+      <TreatWarningAsError>true</TreatWarningAsError>
+      <UseFullPaths>false</UseFullPaths>
+      <WarningLevel>Level4</WarningLevel>
+      <PreprocessorDefinitions>%(PreprocessorDefinitions);WIN32;_WINDOWS;NDEBUG;SDL_MAIN_HANDLED;SPDLOG_SHARED_LIB;SPDLOG_COMPILED_LIB;SPDLOG_FMT_EXTERNAL;FMT_SHARED;CMAKE_INTDIR="MinSizeRel"</PreprocessorDefinitions>
+      <ObjectFileName>$(IntDir)</ObjectFileName>
+      <DebugInformationFormat>
+      </DebugInformationFormat>
+      <ScanSourceForModuleDependencies>false</ScanSourceForModuleDependencies>
+    </ClCompile>
+    <ResourceCompile>
+      <PreprocessorDefinitions>%(PreprocessorDefinitions);WIN32;_WINDOWS;NDEBUG;SDL_MAIN_HANDLED;SPDLOG_SHARED_LIB;SPDLOG_COMPILED_LIB;SPDLOG_FMT_EXTERNAL;FMT_SHARED;CMAKE_INTDIR=\"MinSizeRel\"</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>C:\Users\dkw\.a_dkwrtc\rtsp\include;D:\vcpkg\installed\x64-windows\debug\..\include;D:\vcpkg\installed\x64-windows\debug\..\include\srt;D:\vcpkg\installed\x64-windows\include;D:\vcpkg\installed\x64-windows\include\SDL2;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ResourceCompile>
+    <Midl>
+      <AdditionalIncludeDirectories>C:\Users\dkw\.a_dkwrtc\rtsp\include;D:\vcpkg\installed\x64-windows\debug\..\include;D:\vcpkg\installed\x64-windows\debug\..\include\srt;D:\vcpkg\installed\x64-windows\include;D:\vcpkg\installed\x64-windows\include\SDL2;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <OutputDirectory>$(ProjectDir)/$(IntDir)</OutputDirectory>
+      <HeaderFileName>%(Filename).h</HeaderFileName>
+      <TypeLibraryName>%(Filename).tlb</TypeLibraryName>
+      <InterfaceIdentifierFileName>%(Filename)_i.c</InterfaceIdentifierFileName>
+      <ProxyFileName>%(Filename)_p.c</ProxyFileName>
+    </Midl>
+    <PostBuildEvent>
+      <Message></Message>
+      <Command>setlocal
+C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe -noprofile -executionpolicy Bypass -file D:/vcpkg/scripts/buildsystems/msbuild/applocal.ps1 -targetBinary C:/Users/dkw/.a_dkwrtc/rtsp/build-vcpkg/bin/MinSizeRel/rtsp_player.exe -installedDir D:/vcpkg/installed/x64-windows/bin -OutVariable out
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal &amp; call :cmErrorLevel %errorlevel% &amp; goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd</Command>
+    </PostBuildEvent>
+    <Link>
+      <AdditionalDependencies>avformat.lib;avcodec.lib;swscale.lib;swresample.lib;avutil.lib;D:\vcpkg\installed\x64-windows\lib\SDL2.lib;D:\vcpkg\installed\x64-windows\lib\yaml-cpp.lib;D:\vcpkg\installed\x64-windows\lib\spdlog.lib;D:\vcpkg\installed\x64-windows\debug\lib\srt.lib;D:\vcpkg\installed\x64-windows\lib\fmt.lib;kernel32.lib;user32.lib;gdi32.lib;winspool.lib;shell32.lib;ole32.lib;oleaut32.lib;uuid.lib;comdlg32.lib;advapi32.lib</AdditionalDependencies>
+      <AdditionalLibraryDirectories>D:/vcpkg/installed/x64-windows/debug/lib;D:/vcpkg/installed/x64-windows/debug/lib/$(Configuration);%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalOptions>%(AdditionalOptions) /machine:x64</AdditionalOptions>
+      <DataExecutionPrevention></DataExecutionPrevention>
+      <GenerateDebugInformation>false</GenerateDebugInformation>
+      <IgnoreSpecificDefaultLibraries>%(IgnoreSpecificDefaultLibraries)</IgnoreSpecificDefaultLibraries>
+      <ImageHasSafeExceptionHandlers></ImageHasSafeExceptionHandlers>
+      <ImportLibrary>C:/Users/dkw/.a_dkwrtc/rtsp/build-vcpkg/obj/MinSizeRel/rtsp_player.lib</ImportLibrary>
+      <LinkErrorReporting></LinkErrorReporting>
+      <ProgramDataBaseFile>C:/Users/dkw/.a_dkwrtc/rtsp/build-vcpkg/bin/MinSizeRel/rtsp_player.pdb</ProgramDataBaseFile>
+      <RandomizedBaseAddress></RandomizedBaseAddress>
+      <SubSystem>Console</SubSystem>
+    </Link>
+    <ProjectReference>
+      <LinkLibraryDependencies>false</LinkLibraryDependencies>
+    </ProjectReference>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">
+    <ClCompile>
+      <AdditionalIncludeDirectories>C:\Users\dkw\.a_dkwrtc\rtsp\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalOptions>%(AdditionalOptions) /external:I "D:/vcpkg/installed/x64-windows/debug/../include" /external:I "D:/vcpkg/installed/x64-windows/debug/../include/srt" /external:I "D:/vcpkg/installed/x64-windows/include" /external:I "D:/vcpkg/installed/x64-windows/include/SDL2" /utf-8</AdditionalOptions>
+      <AssemblerListingLocation>$(IntDir)</AssemblerListingLocation>
+      <BasicRuntimeChecks>Default</BasicRuntimeChecks>
+      <BufferSecurityCheck></BufferSecurityCheck>
+      <CallingConvention></CallingConvention>
+      <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
+      <DisableSpecificWarnings>4251;4275</DisableSpecificWarnings>
+      <ExceptionHandling>Sync</ExceptionHandling>
+      <ExternalWarningLevel>TurnOffAllWarnings</ExternalWarningLevel>
+      <FloatingPointModel></FloatingPointModel>
+      <ForceConformanceInForLoopScope></ForceConformanceInForLoopScope>
+      <InlineFunctionExpansion>OnlyExplicitInline</InlineFunctionExpansion>
+      <LanguageStandard>stdcpp20</LanguageStandard>
+      <MinimalRebuild></MinimalRebuild>
+      <Optimization>MaxSpeed</Optimization>
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <RemoveUnreferencedCodeData></RemoveUnreferencedCodeData>
+      <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
+      <RuntimeTypeInfo>true</RuntimeTypeInfo>
+      <SupportJustMyCode></SupportJustMyCode>
+      <TreatWChar_tAsBuiltInType></TreatWChar_tAsBuiltInType>
+      <TreatWarningAsError>true</TreatWarningAsError>
+      <UseFullPaths>false</UseFullPaths>
+      <WarningLevel>Level4</WarningLevel>
+      <PreprocessorDefinitions>%(PreprocessorDefinitions);WIN32;_WINDOWS;NDEBUG;SDL_MAIN_HANDLED;SPDLOG_SHARED_LIB;SPDLOG_COMPILED_LIB;SPDLOG_FMT_EXTERNAL;FMT_SHARED;CMAKE_INTDIR="RelWithDebInfo"</PreprocessorDefinitions>
+      <ObjectFileName>$(IntDir)</ObjectFileName>
+      <ScanSourceForModuleDependencies>false</ScanSourceForModuleDependencies>
+    </ClCompile>
+    <ResourceCompile>
+      <PreprocessorDefinitions>%(PreprocessorDefinitions);WIN32;_WINDOWS;NDEBUG;SDL_MAIN_HANDLED;SPDLOG_SHARED_LIB;SPDLOG_COMPILED_LIB;SPDLOG_FMT_EXTERNAL;FMT_SHARED;CMAKE_INTDIR=\"RelWithDebInfo\"</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>C:\Users\dkw\.a_dkwrtc\rtsp\include;D:\vcpkg\installed\x64-windows\debug\..\include;D:\vcpkg\installed\x64-windows\debug\..\include\srt;D:\vcpkg\installed\x64-windows\include;D:\vcpkg\installed\x64-windows\include\SDL2;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ResourceCompile>
+    <Midl>
+      <AdditionalIncludeDirectories>C:\Users\dkw\.a_dkwrtc\rtsp\include;D:\vcpkg\installed\x64-windows\debug\..\include;D:\vcpkg\installed\x64-windows\debug\..\include\srt;D:\vcpkg\installed\x64-windows\include;D:\vcpkg\installed\x64-windows\include\SDL2;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <OutputDirectory>$(ProjectDir)/$(IntDir)</OutputDirectory>
+      <HeaderFileName>%(Filename).h</HeaderFileName>
+      <TypeLibraryName>%(Filename).tlb</TypeLibraryName>
+      <InterfaceIdentifierFileName>%(Filename)_i.c</InterfaceIdentifierFileName>
+      <ProxyFileName>%(Filename)_p.c</ProxyFileName>
+    </Midl>
+    <PostBuildEvent>
+      <Message></Message>
+      <Command>setlocal
+C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe -noprofile -executionpolicy Bypass -file D:/vcpkg/scripts/buildsystems/msbuild/applocal.ps1 -targetBinary C:/Users/dkw/.a_dkwrtc/rtsp/build-vcpkg/bin/RelWithDebInfo/rtsp_player.exe -installedDir D:/vcpkg/installed/x64-windows/bin -OutVariable out
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal &amp; call :cmErrorLevel %errorlevel% &amp; goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd</Command>
+    </PostBuildEvent>
+    <Link>
+      <AdditionalDependencies>avformat.lib;avcodec.lib;swscale.lib;swresample.lib;avutil.lib;D:\vcpkg\installed\x64-windows\lib\SDL2.lib;D:\vcpkg\installed\x64-windows\lib\yaml-cpp.lib;D:\vcpkg\installed\x64-windows\lib\spdlog.lib;D:\vcpkg\installed\x64-windows\debug\lib\srt.lib;D:\vcpkg\installed\x64-windows\lib\fmt.lib;kernel32.lib;user32.lib;gdi32.lib;winspool.lib;shell32.lib;ole32.lib;oleaut32.lib;uuid.lib;comdlg32.lib;advapi32.lib</AdditionalDependencies>
+      <AdditionalLibraryDirectories>D:/vcpkg/installed/x64-windows/debug/lib;D:/vcpkg/installed/x64-windows/debug/lib/$(Configuration);%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalOptions>%(AdditionalOptions) /machine:x64</AdditionalOptions>
+      <DataExecutionPrevention></DataExecutionPrevention>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+      <IgnoreSpecificDefaultLibraries>%(IgnoreSpecificDefaultLibraries)</IgnoreSpecificDefaultLibraries>
+      <ImageHasSafeExceptionHandlers></ImageHasSafeExceptionHandlers>
+      <ImportLibrary>C:/Users/dkw/.a_dkwrtc/rtsp/build-vcpkg/obj/RelWithDebInfo/rtsp_player.lib</ImportLibrary>
+      <LinkErrorReporting></LinkErrorReporting>
+      <ProgramDataBaseFile>C:/Users/dkw/.a_dkwrtc/rtsp/build-vcpkg/bin/RelWithDebInfo/rtsp_player.pdb</ProgramDataBaseFile>
+      <RandomizedBaseAddress></RandomizedBaseAddress>
+      <SubSystem>Console</SubSystem>
+    </Link>
+    <ProjectReference>
+      <LinkLibraryDependencies>false</LinkLibraryDependencies>
+    </ProjectReference>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <CustomBuild Include="C:\Users\dkw\.a_dkwrtc\rtsp\CMakeLists.txt">
+      <UseUtf8Encoding>Always</UseUtf8Encoding>
+      <Message Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Building Custom Rule C:/Users/dkw/.a_dkwrtc/rtsp/CMakeLists.txt</Message>
+      <Command Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">setlocal
+"C:\Program Files\CMake\bin\cmake.exe" -SC:/Users/dkw/.a_dkwrtc/rtsp -BC:/Users/dkw/.a_dkwrtc/rtsp/build-vcpkg --check-stamp-file C:/Users/dkw/.a_dkwrtc/rtsp/build-vcpkg/CMakeFiles/generate.stamp
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal &amp; call :cmErrorLevel %errorlevel% &amp; goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd</Command>
+      <AdditionalInputs Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">C:\Program Files\CMake\share\cmake-4.2\Modules\CMakeCXXInformation.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\CMakeCommonLanguageInclude.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\CMakeDependentOption.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\CMakeFindDependencyMacro.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\CMakeGenericSystem.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\CMakeInitializeConfigs.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\CMakeLanguageInformation.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\CMakeRCInformation.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\CMakeSystemSpecificInformation.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\CMakeSystemSpecificInitialize.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\CheckCXXSourceCompiles.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\CheckIncludeFileCXX.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\CheckLibraryExists.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\Compiler\CMakeCommonCompilerMacros.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\Compiler\MSVC-CXX.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\Compiler\MSVC.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\FeatureSummary.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\FindPackageHandleStandardArgs.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\FindPackageMessage.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\FindPkgConfig.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\FindThreads.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\Internal\CMakeCXXLinkerInformation.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\Internal\CMakeCommonLinkerInformation.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\Internal\CheckSourceCompiles.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\Linker\MSVC-CXX.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\Linker\MSVC.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\Platform\Linker\Windows-MSVC-CXX.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\Platform\Linker\Windows-MSVC.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\Platform\Windows-Initialize.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\Platform\Windows-MSVC-CXX.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\Platform\Windows-MSVC.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\Platform\Windows.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\Platform\WindowsPaths.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\SelectLibraryConfigurations.cmake;C:\Users\dkw\.a_dkwrtc\rtsp\build-vcpkg\CMakeFiles\4.2.1\CMakeCXXCompiler.cmake;C:\Users\dkw\.a_dkwrtc\rtsp\build-vcpkg\CMakeFiles\4.2.1\CMakeRCCompiler.cmake;C:\Users\dkw\.a_dkwrtc\rtsp\build-vcpkg\CMakeFiles\4.2.1\CMakeSystem.cmake;D:\vcpkg\installed\x64-windows\share\ffmpeg\FindFFMPEG.cmake;D:\vcpkg\installed\x64-windows\share\ffmpeg\vcpkg-cmake-wrapper.cmake;D:\vcpkg\installed\x64-windows\share\fmt\fmt-config-version.cmake;D:\vcpkg\installed\x64-windows\share\fmt\fmt-config.cmake;D:\vcpkg\installed\x64-windows\share\fmt\fmt-targets-debug.cmake;D:\vcpkg\installed\x64-windows\share\fmt\fmt-targets-release.cmake;D:\vcpkg\installed\x64-windows\share\fmt\fmt-targets.cmake;D:\vcpkg\installed\x64-windows\share\sdl2\SDL2Config.cmake;D:\vcpkg\installed\x64-windows\share\sdl2\SDL2ConfigVersion.cmake;D:\vcpkg\installed\x64-windows\share\sdl2\SDL2Targets-debug.cmake;D:\vcpkg\installed\x64-windows\share\sdl2\SDL2Targets-release.cmake;D:\vcpkg\installed\x64-windows\share\sdl2\SDL2Targets.cmake;D:\vcpkg\installed\x64-windows\share\sdl2\SDL2mainTargets-debug.cmake;D:\vcpkg\installed\x64-windows\share\sdl2\SDL2mainTargets-release.cmake;D:\vcpkg\installed\x64-windows\share\sdl2\SDL2mainTargets.cmake;D:\vcpkg\installed\x64-windows\share\sdl2\sdlfind.cmake;D:\vcpkg\installed\x64-windows\share\spdlog\spdlogConfig.cmake;D:\vcpkg\installed\x64-windows\share\spdlog\spdlogConfigTargets-debug.cmake;D:\vcpkg\installed\x64-windows\share\spdlog\spdlogConfigTargets-release.cmake;D:\vcpkg\installed\x64-windows\share\spdlog\spdlogConfigTargets.cmake;D:\vcpkg\installed\x64-windows\share\spdlog\spdlogConfigVersion.cmake;D:\vcpkg\installed\x64-windows\share\yaml-cpp\yaml-cpp-config-version.cmake;D:\vcpkg\installed\x64-windows\share\yaml-cpp\yaml-cpp-config.cmake;D:\vcpkg\installed\x64-windows\share\yaml-cpp\yaml-cpp-targets-debug.cmake;D:\vcpkg\installed\x64-windows\share\yaml-cpp\yaml-cpp-targets-release.cmake;D:\vcpkg\installed\x64-windows\share\yaml-cpp\yaml-cpp-targets.cmake;D:\vcpkg\scripts\buildsystems\vcpkg.cmake;%(AdditionalInputs)</AdditionalInputs>
+      <Outputs Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">C:\Users\dkw\.a_dkwrtc\rtsp\build-vcpkg\CMakeFiles\generate.stamp</Outputs>
+      <LinkObjects Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">false</LinkObjects>
+      <Message Condition="'$(Configuration)|$(Platform)'=='Release|x64'">Building Custom Rule C:/Users/dkw/.a_dkwrtc/rtsp/CMakeLists.txt</Message>
+      <Command Condition="'$(Configuration)|$(Platform)'=='Release|x64'">setlocal
+"C:\Program Files\CMake\bin\cmake.exe" -SC:/Users/dkw/.a_dkwrtc/rtsp -BC:/Users/dkw/.a_dkwrtc/rtsp/build-vcpkg --check-stamp-file C:/Users/dkw/.a_dkwrtc/rtsp/build-vcpkg/CMakeFiles/generate.stamp
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal &amp; call :cmErrorLevel %errorlevel% &amp; goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd</Command>
+      <AdditionalInputs Condition="'$(Configuration)|$(Platform)'=='Release|x64'">C:\Program Files\CMake\share\cmake-4.2\Modules\CMakeCXXInformation.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\CMakeCommonLanguageInclude.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\CMakeDependentOption.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\CMakeFindDependencyMacro.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\CMakeGenericSystem.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\CMakeInitializeConfigs.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\CMakeLanguageInformation.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\CMakeRCInformation.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\CMakeSystemSpecificInformation.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\CMakeSystemSpecificInitialize.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\CheckCXXSourceCompiles.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\CheckIncludeFileCXX.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\CheckLibraryExists.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\Compiler\CMakeCommonCompilerMacros.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\Compiler\MSVC-CXX.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\Compiler\MSVC.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\FeatureSummary.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\FindPackageHandleStandardArgs.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\FindPackageMessage.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\FindPkgConfig.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\FindThreads.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\Internal\CMakeCXXLinkerInformation.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\Internal\CMakeCommonLinkerInformation.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\Internal\CheckSourceCompiles.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\Linker\MSVC-CXX.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\Linker\MSVC.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\Platform\Linker\Windows-MSVC-CXX.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\Platform\Linker\Windows-MSVC.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\Platform\Windows-Initialize.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\Platform\Windows-MSVC-CXX.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\Platform\Windows-MSVC.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\Platform\Windows.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\Platform\WindowsPaths.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\SelectLibraryConfigurations.cmake;C:\Users\dkw\.a_dkwrtc\rtsp\build-vcpkg\CMakeFiles\4.2.1\CMakeCXXCompiler.cmake;C:\Users\dkw\.a_dkwrtc\rtsp\build-vcpkg\CMakeFiles\4.2.1\CMakeRCCompiler.cmake;C:\Users\dkw\.a_dkwrtc\rtsp\build-vcpkg\CMakeFiles\4.2.1\CMakeSystem.cmake;D:\vcpkg\installed\x64-windows\share\ffmpeg\FindFFMPEG.cmake;D:\vcpkg\installed\x64-windows\share\ffmpeg\vcpkg-cmake-wrapper.cmake;D:\vcpkg\installed\x64-windows\share\fmt\fmt-config-version.cmake;D:\vcpkg\installed\x64-windows\share\fmt\fmt-config.cmake;D:\vcpkg\installed\x64-windows\share\fmt\fmt-targets-debug.cmake;D:\vcpkg\installed\x64-windows\share\fmt\fmt-targets-release.cmake;D:\vcpkg\installed\x64-windows\share\fmt\fmt-targets.cmake;D:\vcpkg\installed\x64-windows\share\sdl2\SDL2Config.cmake;D:\vcpkg\installed\x64-windows\share\sdl2\SDL2ConfigVersion.cmake;D:\vcpkg\installed\x64-windows\share\sdl2\SDL2Targets-debug.cmake;D:\vcpkg\installed\x64-windows\share\sdl2\SDL2Targets-release.cmake;D:\vcpkg\installed\x64-windows\share\sdl2\SDL2Targets.cmake;D:\vcpkg\installed\x64-windows\share\sdl2\SDL2mainTargets-debug.cmake;D:\vcpkg\installed\x64-windows\share\sdl2\SDL2mainTargets-release.cmake;D:\vcpkg\installed\x64-windows\share\sdl2\SDL2mainTargets.cmake;D:\vcpkg\installed\x64-windows\share\sdl2\sdlfind.cmake;D:\vcpkg\installed\x64-windows\share\spdlog\spdlogConfig.cmake;D:\vcpkg\installed\x64-windows\share\spdlog\spdlogConfigTargets-debug.cmake;D:\vcpkg\installed\x64-windows\share\spdlog\spdlogConfigTargets-release.cmake;D:\vcpkg\installed\x64-windows\share\spdlog\spdlogConfigTargets.cmake;D:\vcpkg\installed\x64-windows\share\spdlog\spdlogConfigVersion.cmake;D:\vcpkg\installed\x64-windows\share\yaml-cpp\yaml-cpp-config-version.cmake;D:\vcpkg\installed\x64-windows\share\yaml-cpp\yaml-cpp-config.cmake;D:\vcpkg\installed\x64-windows\share\yaml-cpp\yaml-cpp-targets-debug.cmake;D:\vcpkg\installed\x64-windows\share\yaml-cpp\yaml-cpp-targets-release.cmake;D:\vcpkg\installed\x64-windows\share\yaml-cpp\yaml-cpp-targets.cmake;D:\vcpkg\scripts\buildsystems\vcpkg.cmake;%(AdditionalInputs)</AdditionalInputs>
+      <Outputs Condition="'$(Configuration)|$(Platform)'=='Release|x64'">C:\Users\dkw\.a_dkwrtc\rtsp\build-vcpkg\CMakeFiles\generate.stamp</Outputs>
+      <LinkObjects Condition="'$(Configuration)|$(Platform)'=='Release|x64'">false</LinkObjects>
+      <Message Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">Building Custom Rule C:/Users/dkw/.a_dkwrtc/rtsp/CMakeLists.txt</Message>
+      <Command Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">setlocal
+"C:\Program Files\CMake\bin\cmake.exe" -SC:/Users/dkw/.a_dkwrtc/rtsp -BC:/Users/dkw/.a_dkwrtc/rtsp/build-vcpkg --check-stamp-file C:/Users/dkw/.a_dkwrtc/rtsp/build-vcpkg/CMakeFiles/generate.stamp
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal &amp; call :cmErrorLevel %errorlevel% &amp; goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd</Command>
+      <AdditionalInputs Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">C:\Program Files\CMake\share\cmake-4.2\Modules\CMakeCXXInformation.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\CMakeCommonLanguageInclude.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\CMakeDependentOption.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\CMakeFindDependencyMacro.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\CMakeGenericSystem.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\CMakeInitializeConfigs.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\CMakeLanguageInformation.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\CMakeRCInformation.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\CMakeSystemSpecificInformation.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\CMakeSystemSpecificInitialize.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\CheckCXXSourceCompiles.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\CheckIncludeFileCXX.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\CheckLibraryExists.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\Compiler\CMakeCommonCompilerMacros.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\Compiler\MSVC-CXX.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\Compiler\MSVC.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\FeatureSummary.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\FindPackageHandleStandardArgs.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\FindPackageMessage.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\FindPkgConfig.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\FindThreads.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\Internal\CMakeCXXLinkerInformation.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\Internal\CMakeCommonLinkerInformation.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\Internal\CheckSourceCompiles.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\Linker\MSVC-CXX.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\Linker\MSVC.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\Platform\Linker\Windows-MSVC-CXX.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\Platform\Linker\Windows-MSVC.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\Platform\Windows-Initialize.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\Platform\Windows-MSVC-CXX.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\Platform\Windows-MSVC.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\Platform\Windows.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\Platform\WindowsPaths.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\SelectLibraryConfigurations.cmake;C:\Users\dkw\.a_dkwrtc\rtsp\build-vcpkg\CMakeFiles\4.2.1\CMakeCXXCompiler.cmake;C:\Users\dkw\.a_dkwrtc\rtsp\build-vcpkg\CMakeFiles\4.2.1\CMakeRCCompiler.cmake;C:\Users\dkw\.a_dkwrtc\rtsp\build-vcpkg\CMakeFiles\4.2.1\CMakeSystem.cmake;D:\vcpkg\installed\x64-windows\share\ffmpeg\FindFFMPEG.cmake;D:\vcpkg\installed\x64-windows\share\ffmpeg\vcpkg-cmake-wrapper.cmake;D:\vcpkg\installed\x64-windows\share\fmt\fmt-config-version.cmake;D:\vcpkg\installed\x64-windows\share\fmt\fmt-config.cmake;D:\vcpkg\installed\x64-windows\share\fmt\fmt-targets-debug.cmake;D:\vcpkg\installed\x64-windows\share\fmt\fmt-targets-release.cmake;D:\vcpkg\installed\x64-windows\share\fmt\fmt-targets.cmake;D:\vcpkg\installed\x64-windows\share\sdl2\SDL2Config.cmake;D:\vcpkg\installed\x64-windows\share\sdl2\SDL2ConfigVersion.cmake;D:\vcpkg\installed\x64-windows\share\sdl2\SDL2Targets-debug.cmake;D:\vcpkg\installed\x64-windows\share\sdl2\SDL2Targets-release.cmake;D:\vcpkg\installed\x64-windows\share\sdl2\SDL2Targets.cmake;D:\vcpkg\installed\x64-windows\share\sdl2\SDL2mainTargets-debug.cmake;D:\vcpkg\installed\x64-windows\share\sdl2\SDL2mainTargets-release.cmake;D:\vcpkg\installed\x64-windows\share\sdl2\SDL2mainTargets.cmake;D:\vcpkg\installed\x64-windows\share\sdl2\sdlfind.cmake;D:\vcpkg\installed\x64-windows\share\spdlog\spdlogConfig.cmake;D:\vcpkg\installed\x64-windows\share\spdlog\spdlogConfigTargets-debug.cmake;D:\vcpkg\installed\x64-windows\share\spdlog\spdlogConfigTargets-release.cmake;D:\vcpkg\installed\x64-windows\share\spdlog\spdlogConfigTargets.cmake;D:\vcpkg\installed\x64-windows\share\spdlog\spdlogConfigVersion.cmake;D:\vcpkg\installed\x64-windows\share\yaml-cpp\yaml-cpp-config-version.cmake;D:\vcpkg\installed\x64-windows\share\yaml-cpp\yaml-cpp-config.cmake;D:\vcpkg\installed\x64-windows\share\yaml-cpp\yaml-cpp-targets-debug.cmake;D:\vcpkg\installed\x64-windows\share\yaml-cpp\yaml-cpp-targets-release.cmake;D:\vcpkg\installed\x64-windows\share\yaml-cpp\yaml-cpp-targets.cmake;D:\vcpkg\scripts\buildsystems\vcpkg.cmake;%(AdditionalInputs)</AdditionalInputs>
+      <Outputs Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">C:\Users\dkw\.a_dkwrtc\rtsp\build-vcpkg\CMakeFiles\generate.stamp</Outputs>
+      <LinkObjects Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">false</LinkObjects>
+      <Message Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">Building Custom Rule C:/Users/dkw/.a_dkwrtc/rtsp/CMakeLists.txt</Message>
+      <Command Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">setlocal
+"C:\Program Files\CMake\bin\cmake.exe" -SC:/Users/dkw/.a_dkwrtc/rtsp -BC:/Users/dkw/.a_dkwrtc/rtsp/build-vcpkg --check-stamp-file C:/Users/dkw/.a_dkwrtc/rtsp/build-vcpkg/CMakeFiles/generate.stamp
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal &amp; call :cmErrorLevel %errorlevel% &amp; goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd</Command>
+      <AdditionalInputs Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">C:\Program Files\CMake\share\cmake-4.2\Modules\CMakeCXXInformation.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\CMakeCommonLanguageInclude.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\CMakeDependentOption.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\CMakeFindDependencyMacro.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\CMakeGenericSystem.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\CMakeInitializeConfigs.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\CMakeLanguageInformation.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\CMakeRCInformation.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\CMakeSystemSpecificInformation.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\CMakeSystemSpecificInitialize.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\CheckCXXSourceCompiles.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\CheckIncludeFileCXX.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\CheckLibraryExists.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\Compiler\CMakeCommonCompilerMacros.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\Compiler\MSVC-CXX.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\Compiler\MSVC.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\FeatureSummary.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\FindPackageHandleStandardArgs.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\FindPackageMessage.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\FindPkgConfig.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\FindThreads.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\Internal\CMakeCXXLinkerInformation.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\Internal\CMakeCommonLinkerInformation.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\Internal\CheckSourceCompiles.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\Linker\MSVC-CXX.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\Linker\MSVC.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\Platform\Linker\Windows-MSVC-CXX.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\Platform\Linker\Windows-MSVC.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\Platform\Windows-Initialize.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\Platform\Windows-MSVC-CXX.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\Platform\Windows-MSVC.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\Platform\Windows.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\Platform\WindowsPaths.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\SelectLibraryConfigurations.cmake;C:\Users\dkw\.a_dkwrtc\rtsp\build-vcpkg\CMakeFiles\4.2.1\CMakeCXXCompiler.cmake;C:\Users\dkw\.a_dkwrtc\rtsp\build-vcpkg\CMakeFiles\4.2.1\CMakeRCCompiler.cmake;C:\Users\dkw\.a_dkwrtc\rtsp\build-vcpkg\CMakeFiles\4.2.1\CMakeSystem.cmake;D:\vcpkg\installed\x64-windows\share\ffmpeg\FindFFMPEG.cmake;D:\vcpkg\installed\x64-windows\share\ffmpeg\vcpkg-cmake-wrapper.cmake;D:\vcpkg\installed\x64-windows\share\fmt\fmt-config-version.cmake;D:\vcpkg\installed\x64-windows\share\fmt\fmt-config.cmake;D:\vcpkg\installed\x64-windows\share\fmt\fmt-targets-debug.cmake;D:\vcpkg\installed\x64-windows\share\fmt\fmt-targets-release.cmake;D:\vcpkg\installed\x64-windows\share\fmt\fmt-targets.cmake;D:\vcpkg\installed\x64-windows\share\sdl2\SDL2Config.cmake;D:\vcpkg\installed\x64-windows\share\sdl2\SDL2ConfigVersion.cmake;D:\vcpkg\installed\x64-windows\share\sdl2\SDL2Targets-debug.cmake;D:\vcpkg\installed\x64-windows\share\sdl2\SDL2Targets-release.cmake;D:\vcpkg\installed\x64-windows\share\sdl2\SDL2Targets.cmake;D:\vcpkg\installed\x64-windows\share\sdl2\SDL2mainTargets-debug.cmake;D:\vcpkg\installed\x64-windows\share\sdl2\SDL2mainTargets-release.cmake;D:\vcpkg\installed\x64-windows\share\sdl2\SDL2mainTargets.cmake;D:\vcpkg\installed\x64-windows\share\sdl2\sdlfind.cmake;D:\vcpkg\installed\x64-windows\share\spdlog\spdlogConfig.cmake;D:\vcpkg\installed\x64-windows\share\spdlog\spdlogConfigTargets-debug.cmake;D:\vcpkg\installed\x64-windows\share\spdlog\spdlogConfigTargets-release.cmake;D:\vcpkg\installed\x64-windows\share\spdlog\spdlogConfigTargets.cmake;D:\vcpkg\installed\x64-windows\share\spdlog\spdlogConfigVersion.cmake;D:\vcpkg\installed\x64-windows\share\yaml-cpp\yaml-cpp-config-version.cmake;D:\vcpkg\installed\x64-windows\share\yaml-cpp\yaml-cpp-config.cmake;D:\vcpkg\installed\x64-windows\share\yaml-cpp\yaml-cpp-targets-debug.cmake;D:\vcpkg\installed\x64-windows\share\yaml-cpp\yaml-cpp-targets-release.cmake;D:\vcpkg\installed\x64-windows\share\yaml-cpp\yaml-cpp-targets.cmake;D:\vcpkg\scripts\buildsystems\vcpkg.cmake;%(AdditionalInputs)</AdditionalInputs>
+      <Outputs Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">C:\Users\dkw\.a_dkwrtc\rtsp\build-vcpkg\CMakeFiles\generate.stamp</Outputs>
+      <LinkObjects Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">false</LinkObjects>
+    </CustomBuild>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="C:\Users\dkw\.a_dkwrtc\rtsp\src\main.cpp" />
+    <ClCompile Include="C:\Users\dkw\.a_dkwrtc\rtsp\src\rtsp_client.cpp" />
+    <ClCompile Include="C:\Users\dkw\.a_dkwrtc\rtsp\src\rtp_parser.cpp" />
+    <ClCompile Include="C:\Users\dkw\.a_dkwrtc\rtsp\src\h264_depacketizer.cpp" />
+    <ClCompile Include="C:\Users\dkw\.a_dkwrtc\rtsp\src\jitter_buffer.cpp" />
+    <ClCompile Include="C:\Users\dkw\.a_dkwrtc\rtsp\src\decoder.cpp" />
+    <ClCompile Include="C:\Users\dkw\.a_dkwrtc\rtsp\src\video_renderer.cpp" />
+    <ClInclude Include="C:\Users\dkw\.a_dkwrtc\rtsp\include\rtsp_client.hpp" />
+    <ClInclude Include="C:\Users\dkw\.a_dkwrtc\rtsp\include\rtp_parser.hpp" />
+    <ClInclude Include="C:\Users\dkw\.a_dkwrtc\rtsp\include\h264_depacketizer.hpp" />
+    <ClInclude Include="C:\Users\dkw\.a_dkwrtc\rtsp\include\jitter_buffer.hpp" />
+    <ClInclude Include="C:\Users\dkw\.a_dkwrtc\rtsp\include\decoder.hpp" />
+    <ClInclude Include="C:\Users\dkw\.a_dkwrtc\rtsp\include\video_renderer.hpp" />
+  </ItemGroup>
+  <ItemGroup />
+  <ItemGroup>
+    <ProjectReference Include="C:\Users\dkw\.a_dkwrtc\rtsp\build-vcpkg\ZERO_CHECK.vcxproj">
+      <Project>{EC44DE77-361B-3D4E-9EAB-9E54D1A21C4F}</Project>
+      <Name>ZERO_CHECK</Name>
+      <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
+      <CopyToOutputDirectory>Never</CopyToOutputDirectory>
+    </ProjectReference>
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <ImportGroup Label="ExtensionTargets">
+  </ImportGroup>
+</Project>

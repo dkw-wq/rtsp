@@ -1,0 +1,90 @@
+#pragma once
+
+#include <string>
+#include <memory>
+#include <functional>
+#include <atomic>
+#include <mutex>
+#include <queue>
+#include <thread>
+#include <chrono>
+
+namespace rtsp {
+
+// Forward declarations
+struct RtpPacket;
+struct MediaFrame;
+
+/**
+ * @brief RTSP客户端类
+ * @note 使用FFmpeg处理RTSP连接和RTP接收
+ */
+class RtspClient {
+public:
+    using FrameCallback = std::function<void(const std::shared_ptr<MediaFrame>&)>;
+    using ErrorCallback = std::function<void(const std::string&)>;
+
+    RtspClient();
+    ~RtspClient();
+
+    // 禁止拷贝和移动
+    RtspClient(const RtspClient&) = delete;
+    RtspClient& operator=(const RtspClient&) = delete;
+    RtspClient(RtspClient&&) = delete;
+    RtspClient& operator=(RtspClient&&) = delete;
+
+    /**
+     * @brief 连接到RTSP流
+     * @param url RTSP URL (e.g., rtsp://192.168.1.100:554/stream)
+     * @return true if connected successfully
+     */
+    bool connect(const std::string& url);
+
+    /**
+     * @brief 断开连接
+     */
+    void disconnect();
+
+    /**
+     * @brief 开始接收流
+     */
+    void start();
+
+    /**
+     * @brief 停止接收流
+     */
+    void stop();
+
+    /**
+     * @brief 设置帧回调
+     */
+    void setFrameCallback(FrameCallback callback);
+
+    /**
+     * @brief 设置错误回调
+     */
+    void setErrorCallback(ErrorCallback callback);
+
+    /**
+     * @brief 检查是否正在运行
+     */
+    bool isRunning() const;
+
+    /**
+     * @brief 获取视频宽度
+     */
+    int getWidth() const;
+
+    /**
+     * @brief 获取视频高度
+     */
+    int getHeight() const;
+
+private:
+    void receiveLoop();
+
+    class Impl;
+    std::unique_ptr<Impl> pImpl_;
+};
+
+} // namespace rtsp
