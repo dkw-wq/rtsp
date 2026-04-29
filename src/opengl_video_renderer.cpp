@@ -1,7 +1,11 @@
 #include "video_renderer.hpp"
 
 #include <array>
+#include <algorithm>
+#include <cctype>
 #include <cstring>
+#include <iomanip>
+#include <sstream>
 #include <string>
 
 #include <spdlog/spdlog.h>
@@ -126,6 +130,7 @@ constexpr const char* kFragmentShader = R"(
 uniform sampler2D tex_y;
 uniform sampler2D tex_u;
 uniform sampler2D tex_v;
+uniform int filter_mode;
 varying vec2 v_texCoord;
 
 void main() {
@@ -137,17 +142,99 @@ void main() {
     rgb.r = y + 1.402 * v;
     rgb.g = y - 0.344136 * u - 0.714136 * v;
     rgb.b = y + 1.772 * u;
-    gl_FragColor = vec4(rgb, 1.0);
+
+    if (filter_mode == 1) {
+        float gray = dot(rgb, vec3(0.299, 0.587, 0.114));
+        rgb = vec3(gray);
+    } else if (filter_mode == 2) {
+        rgb = vec3(rgb.r * 1.08 + 0.03, rgb.g * 1.02, rgb.b * 0.90);
+    } else if (filter_mode == 3) {
+        rgb = vec3(1.0) - rgb;
+    }
+
+    gl_FragColor = vec4(clamp(rgb, 0.0, 1.0), 1.0);
 }
 )";
 
+int parseFilterMode(std::string filterName) {
+    std::transform(filterName.begin(), filterName.end(), filterName.begin(),
+                   [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+
+    if (filterName == "none" || filterName == "off" || filterName == "normal") {
+        return 0;
+    }
+    if (filterName == "grayscale" || filterName == "gray" || filterName == "mono") {
+        return 1;
+    }
+    if (filterName == "warm") {
+        return 2;
+    }
+    if (filterName == "invert" || filterName == "negative") {
+        return 3;
+    }
+
+    SPDLOG_WARN("Unknown OpenGL filter '{}', using none", filterName);
+    return 0;
+}
+
+const char* filterName(int filterMode) {
+    switch (filterMode) {
+        case 1:
+            return "grayscale";
+        case 2:
+            return "warm";
+        case 3:
+            return "invert";
+        default:
+            return "none";
+    }
+}
+
+using Glyph = std::array<uint8_t, 7>;
+
+Glyph glyphFor(char ch) {
+    switch (ch) {
+        case '0': return {0x0E, 0x11, 0x13, 0x15, 0x19, 0x11, 0x0E};
+        case '1': return {0x04, 0x0C, 0x04, 0x04, 0x04, 0x04, 0x0E};
+        case '2': return {0x0E, 0x11, 0x01, 0x02, 0x04, 0x08, 0x1F};
+        case '3': return {0x1E, 0x01, 0x01, 0x0E, 0x01, 0x01, 0x1E};
+        case '4': return {0x02, 0x06, 0x0A, 0x12, 0x1F, 0x02, 0x02};
+        case '5': return {0x1F, 0x10, 0x10, 0x1E, 0x01, 0x01, 0x1E};
+        case '6': return {0x0E, 0x10, 0x10, 0x1E, 0x11, 0x11, 0x0E};
+        case '7': return {0x1F, 0x01, 0x02, 0x04, 0x08, 0x08, 0x08};
+        case '8': return {0x0E, 0x11, 0x11, 0x0E, 0x11, 0x11, 0x0E};
+        case '9': return {0x0E, 0x11, 0x11, 0x0F, 0x01, 0x01, 0x0E};
+        case 'A': return {0x0E, 0x11, 0x11, 0x1F, 0x11, 0x11, 0x11};
+        case 'B': return {0x1E, 0x11, 0x11, 0x1E, 0x11, 0x11, 0x1E};
+        case 'C': return {0x0E, 0x11, 0x10, 0x10, 0x10, 0x11, 0x0E};
+        case 'D': return {0x1E, 0x11, 0x11, 0x11, 0x11, 0x11, 0x1E};
+        case 'E': return {0x1F, 0x10, 0x10, 0x1E, 0x10, 0x10, 0x1F};
+        case 'F': return {0x1F, 0x10, 0x10, 0x1E, 0x10, 0x10, 0x10};
+        case 'I': return {0x0E, 0x04, 0x04, 0x04, 0x04, 0x04, 0x0E};
+        case 'L': return {0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x1F};
+        case 'M': return {0x11, 0x1B, 0x15, 0x15, 0x11, 0x11, 0x11};
+        case 'N': return {0x11, 0x19, 0x15, 0x13, 0x11, 0x11, 0x11};
+        case 'O': return {0x0E, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0E};
+        case 'P': return {0x1E, 0x11, 0x11, 0x1E, 0x10, 0x10, 0x10};
+        case 'R': return {0x1E, 0x11, 0x11, 0x1E, 0x14, 0x12, 0x11};
+        case 'S': return {0x0F, 0x10, 0x10, 0x0E, 0x01, 0x01, 0x1E};
+        case 'T': return {0x1F, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04};
+        case 'U': return {0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0E};
+        case 'Y': return {0x11, 0x11, 0x0A, 0x04, 0x04, 0x04, 0x04};
+        case ':': return {0x00, 0x04, 0x04, 0x00, 0x04, 0x04, 0x00};
+        case '.': return {0x00, 0x00, 0x00, 0x00, 0x00, 0x0C, 0x0C};
+        default: return {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
+    }
+}
+
 class OpenGlVideoRenderer final : public VideoRenderer {
 public:
-    OpenGlVideoRenderer();
+    explicit OpenGlVideoRenderer(const std::string& filterName = "none");
     ~OpenGlVideoRenderer() override;
 
     bool initialize(int width, int height, const std::string& title) override;
     bool render(const std::shared_ptr<MediaFrame>& frame) override;
+    void setPlaybackStats(const PlaybackStats& stats) override;
     bool handleEvents() override;
     void close() override;
 
@@ -162,6 +249,10 @@ private:
     void setupTexture(GLuint texture) const;
     bool renderYuv(const uint8_t* y, const uint8_t* u, const uint8_t* v,
                    int width, int height);
+    void drawOverlay();
+    void drawText(float x, float y, const std::string& text, float scale) const;
+    void drawRect(float x, float y, float width, float height) const;
+    std::array<std::string, 5> makeOverlayLines() const;
 
     SDL_Window* window_;
     SDL_GLContext glContext_;
@@ -172,6 +263,9 @@ private:
     GLint yLocation_;
     GLint uLocation_;
     GLint vLocation_;
+    GLint filterModeLocation_;
+    int filterMode_;
+    PlaybackStats playbackStats_;
 
     int width_;
     int height_;
@@ -179,7 +273,7 @@ private:
     bool apiLoaded_;
 };
 
-OpenGlVideoRenderer::OpenGlVideoRenderer()
+OpenGlVideoRenderer::OpenGlVideoRenderer(const std::string& filterName)
     : window_(nullptr)
     , glContext_(nullptr)
     , program_(0)
@@ -187,6 +281,9 @@ OpenGlVideoRenderer::OpenGlVideoRenderer()
     , yLocation_(-1)
     , uLocation_(-1)
     , vLocation_(-1)
+    , filterModeLocation_(-1)
+    , filterMode_(parseFilterMode(filterName))
+    , playbackStats_()
     , width_(0)
     , height_(0)
     , initialized_(false)
@@ -275,6 +372,10 @@ bool OpenGlVideoRenderer::render(const std::shared_ptr<MediaFrame>& frame) {
         frame->height);
 }
 
+void OpenGlVideoRenderer::setPlaybackStats(const PlaybackStats& stats) {
+    playbackStats_ = stats;
+}
+
 bool OpenGlVideoRenderer::handleEvents() {
     SDL_Event event;
 
@@ -286,6 +387,14 @@ bool OpenGlVideoRenderer::handleEvents() {
                 if (event.key.keysym.sym == SDLK_ESCAPE ||
                     event.key.keysym.sym == SDLK_q) {
                     return false;
+                }
+                if (event.key.keysym.sym == SDLK_f) {
+                    filterMode_ = (filterMode_ + 1) % 4;
+                    if (apiLoaded_ && filterModeLocation_ >= 0) {
+                        gl_.useProgram(program_);
+                        gl_.uniform1i(filterModeLocation_, filterMode_);
+                    }
+                    SPDLOG_INFO("OpenGL filter: {}", filterName(filterMode_));
                 }
                 break;
             case SDL_WINDOWEVENT:
@@ -331,6 +440,7 @@ void OpenGlVideoRenderer::close() {
     yLocation_ = -1;
     uLocation_ = -1;
     vLocation_ = -1;
+    filterModeLocation_ = -1;
     width_ = 0;
     height_ = 0;
     initialized_ = false;
@@ -379,9 +489,12 @@ bool OpenGlVideoRenderer::createProgram() {
     yLocation_ = gl_.getUniformLocation(program_, "tex_y");
     uLocation_ = gl_.getUniformLocation(program_, "tex_u");
     vLocation_ = gl_.getUniformLocation(program_, "tex_v");
+    filterModeLocation_ = gl_.getUniformLocation(program_, "filter_mode");
     gl_.uniform1i(yLocation_, 0);
     gl_.uniform1i(uLocation_, 1);
     gl_.uniform1i(vLocation_, 2);
+    gl_.uniform1i(filterModeLocation_, filterMode_);
+    SPDLOG_INFO("OpenGL filter: {}", filterName(filterMode_));
 
     return true;
 }
@@ -486,14 +599,127 @@ bool OpenGlVideoRenderer::renderYuv(const uint8_t* y, const uint8_t* u, const ui
     glVertex2f(1.0F, 1.0F);
     glEnd();
 
+    drawOverlay();
+
     SDL_GL_SwapWindow(window_);
     return true;
+}
+
+std::array<std::string, 5> OpenGlVideoRenderer::makeOverlayLines() const {
+    std::ostringstream fps;
+    fps << "FPS: " << std::fixed << std::setprecision(1) << playbackStats_.fps;
+
+    return {
+        fps.str(),
+        "DECODED: " + std::to_string(playbackStats_.decodedFrames),
+        "DROPPED: " + std::to_string(playbackStats_.droppedFrames),
+        "BUFFER: " + std::to_string(playbackStats_.jitterBufferSize),
+        "LATENCY: " + std::to_string(playbackStats_.latencyMs) + "MS"
+    };
+}
+
+void OpenGlVideoRenderer::drawOverlay() {
+    if (!window_) {
+        return;
+    }
+
+    int windowWidth = 0;
+    int windowHeight = 0;
+    SDL_GetWindowSize(window_, &windowWidth, &windowHeight);
+    if (windowWidth <= 0 || windowHeight <= 0) {
+        return;
+    }
+
+    const auto lines = makeOverlayLines();
+    const float scale = 2.0F;
+    const float lineHeight = 8.0F * scale;
+    const float left = 10.0F;
+    const float top = 10.0F;
+    size_t maxLineLength = 0;
+    for (const std::string& line : lines) {
+        maxLineLength = std::max(maxLineLength, line.size());
+    }
+    const float width = static_cast<float>(maxLineLength) * 6.0F * scale + 12.0F;
+    const float height = 12.0F + lineHeight * static_cast<float>(lines.size());
+
+    gl_.useProgram(0);
+    glMatrixMode(GL_PROJECTION);
+    glPushMatrix();
+    glLoadIdentity();
+    glOrtho(0.0, static_cast<double>(windowWidth), static_cast<double>(windowHeight), 0.0, -1.0, 1.0);
+
+    glMatrixMode(GL_MODELVIEW);
+    glPushMatrix();
+    glLoadIdentity();
+
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    glDisable(GL_TEXTURE_2D);
+
+    glColor4f(0.0F, 0.0F, 0.0F, 0.62F);
+    drawRect(left - 6.0F, top - 6.0F, width, height);
+
+    glColor4f(0.72F, 1.0F, 0.86F, 1.0F);
+    float y = top;
+    for (const std::string& line : lines) {
+        drawText(left, y, line, scale);
+        y += lineHeight;
+    }
+
+    glEnable(GL_TEXTURE_2D);
+    glDisable(GL_BLEND);
+
+    glPopMatrix();
+    glMatrixMode(GL_PROJECTION);
+    glPopMatrix();
+    glMatrixMode(GL_MODELVIEW);
+}
+
+void OpenGlVideoRenderer::drawText(float x, float y, const std::string& text, float scale) const {
+    float cursorX = x;
+    for (char rawCh : text) {
+        const char ch = static_cast<char>(std::toupper(static_cast<unsigned char>(rawCh)));
+        if (ch == ' ') {
+            cursorX += 4.0F * scale;
+            continue;
+        }
+
+        const Glyph glyph = glyphFor(ch);
+        for (size_t row = 0; row < glyph.size(); ++row) {
+            for (int col = 0; col < 5; ++col) {
+                const uint8_t mask = static_cast<uint8_t>(1U << (4 - col));
+                if ((glyph[row] & mask) == 0) {
+                    continue;
+                }
+
+                drawRect(cursorX + static_cast<float>(col) * scale,
+                         y + static_cast<float>(row) * scale,
+                         scale,
+                         scale);
+            }
+        }
+
+        cursorX += 6.0F * scale;
+    }
+}
+
+void OpenGlVideoRenderer::drawRect(float x, float y, float width, float height) const {
+    glBegin(GL_QUADS);
+    glVertex2f(x, y);
+    glVertex2f(x + width, y);
+    glVertex2f(x + width, y + height);
+    glVertex2f(x, y + height);
+    glEnd();
 }
 
 } // namespace
 
 std::unique_ptr<VideoRenderer> createOpenGlVideoRenderer() {
     return std::make_unique<OpenGlVideoRenderer>();
+}
+
+std::unique_ptr<VideoRenderer> createOpenGlVideoRenderer(const std::string& filterName) {
+    return std::make_unique<OpenGlVideoRenderer>(filterName);
 }
 
 } // namespace rtsp

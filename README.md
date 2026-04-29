@@ -14,6 +14,12 @@ D:\vcpkg\vcpkg.exe install ffmpeg:x64-windows sdl2:x64-windows yaml-cpp:x64-wind
 
 renderer: "opengl"
 
+OpenGL 滤镜：
+
+opengl_filter: "warm"
+
+可选值：none, grayscale, warm, invert。运行时按 F 可以切换滤镜。
+
 
 启动时传真实 RTSP 地址：
 

@@ -16,6 +16,7 @@ public:
 
     bool initialize(int width, int height, const std::string& title) override;
     bool render(const std::shared_ptr<MediaFrame>& frame) override;
+    void setPlaybackStats(const PlaybackStats& stats) override;
     bool handleEvents() override;
     void close() override;
 
@@ -132,6 +133,8 @@ bool SdlVideoRenderer::render(const std::shared_ptr<MediaFrame>& frame) {
         frame->height
     );
 }
+
+void SdlVideoRenderer::setPlaybackStats(const PlaybackStats&) {}
 
 bool SdlVideoRenderer::renderYuv(const uint8_t* y, const uint8_t* u, const uint8_t* v,
                                  int width, int height) {

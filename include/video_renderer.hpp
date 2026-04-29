@@ -1,11 +1,20 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <string>
 #include "jitter_buffer.hpp"
 
 namespace rtsp {
+
+struct PlaybackStats {
+    double fps = 0.0;
+    uint64_t decodedFrames = 0;
+    uint64_t droppedFrames = 0;
+    size_t jitterBufferSize = 0;
+    uint32_t latencyMs = 0;
+};
 
 /**
  * @brief 视频渲染器
@@ -31,6 +40,11 @@ public:
      * @return true if rendered successfully
      */
     virtual bool render(const std::shared_ptr<MediaFrame>& frame) = 0;
+
+    /**
+     * @brief 更新播放状态叠加层数据
+     */
+    virtual void setPlaybackStats(const PlaybackStats& stats) = 0;
 
     /**
      * @brief 处理SDL事件
@@ -61,5 +75,6 @@ public:
 
 std::unique_ptr<VideoRenderer> createSdlVideoRenderer();
 std::unique_ptr<VideoRenderer> createOpenGlVideoRenderer();
+std::unique_ptr<VideoRenderer> createOpenGlVideoRenderer(const std::string& filterName);
 
 } // namespace rtsp

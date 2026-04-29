@@ -17,3 +17,6 @@ log_level: "info"
 
 # 渲染后端: sdl, opengl
 renderer: "opengl"
+
+# OpenGL滤镜: none, grayscale, warm, invert
+opengl_filter: "warm"

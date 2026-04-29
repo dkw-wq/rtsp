@@ -61,6 +61,7 @@ int main(int argc, char* argv[]) {
     int height = 1080;
     std::string logLevelName = "info";
     std::string rendererName = "sdl";
+    std::string openglFilterName = "none";
     size_t jitterMaxSize = 30;
     uint32_t jitterLatencyMs = 100;
     std::string configWarning;
@@ -82,6 +83,9 @@ int main(int argc, char* argv[]) {
         }
         if (config["renderer"]) {
             rendererName = config["renderer"].as<std::string>();
+        }
+        if (config["opengl_filter"]) {
+            openglFilterName = config["opengl_filter"].as<std::string>();
         }
         if (config["jitter_buffer"]) {
             const auto jitterConfig = config["jitter_buffer"];
@@ -120,6 +124,7 @@ int main(int argc, char* argv[]) {
 
     SPDLOG_INFO("RTSP URL: {}", rtspUrl);
     SPDLOG_INFO("Renderer backend: {}", rendererName);
+    SPDLOG_INFO("OpenGL filter: {}", openglFilterName);
     SPDLOG_INFO("Jitter buffer: max_size={}, latency_ms={}", jitterMaxSize, jitterLatencyMs);
 
     // 创建组件
@@ -128,7 +133,7 @@ int main(int argc, char* argv[]) {
     std::unique_ptr<rtsp::VideoRenderer> renderer;
     const std::string rendererBackend = toLower(rendererName);
     if (rendererBackend == "opengl" || rendererBackend == "gl") {
-        renderer = rtsp::createOpenGlVideoRenderer();
+        renderer = rtsp::createOpenGlVideoRenderer(openglFilterName);
     } else {
         if (rendererBackend != "sdl") {
             SPDLOG_WARN("Unknown renderer backend '{}', using sdl", rendererName);
@@ -172,10 +177,39 @@ int main(int argc, char* argv[]) {
 
     // 主渲染循环
     std::shared_ptr<rtsp::MediaFrame> frame;
+    rtsp::PlaybackStats playbackStats;
+    uint64_t renderedFramesSinceFpsUpdate = 0;
+    auto lastFpsUpdateTime = std::chrono::steady_clock::now();
+
     while (g_running && renderer->handleEvents()) {
         // 从jitter buffer获取帧
         if (jitterBuffer->pop(frame, 10)) {
-            renderer->render(frame);
+            const auto now = std::chrono::steady_clock::now();
+            if (frame->recvTime.count() > 0) {
+                const auto frameRecvTime = std::chrono::steady_clock::time_point(frame->recvTime);
+                playbackStats.latencyMs = static_cast<uint32_t>(
+                    std::chrono::duration_cast<std::chrono::milliseconds>(now - frameRecvTime).count());
+            }
+
+            const auto jitterStats = jitterBuffer->getStats();
+            playbackStats.decodedFrames = jitterStats.totalFrames;
+            playbackStats.droppedFrames = jitterStats.droppedFrames;
+            playbackStats.jitterBufferSize = jitterStats.bufferSize;
+
+            renderer->setPlaybackStats(playbackStats);
+            if (renderer->render(frame)) {
+                ++renderedFramesSinceFpsUpdate;
+            }
+
+            const auto elapsed = now - lastFpsUpdateTime;
+            if (elapsed >= std::chrono::seconds(1)) {
+                const double elapsedSeconds =
+                    std::chrono::duration<double>(elapsed).count();
+                playbackStats.fps =
+                    static_cast<double>(renderedFramesSinceFpsUpdate) / elapsedSeconds;
+                renderedFramesSinceFpsUpdate = 0;
+                lastFpsUpdateTime = now;
+            }
         }
 
         // 短暂休眠避免CPU占用过高
