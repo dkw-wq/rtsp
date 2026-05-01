@@ -7,6 +7,7 @@
 #include <iomanip>
 #include <sstream>
 #include <string>
+#include <vector>
 
 #include <spdlog/spdlog.h>
 
@@ -63,6 +64,7 @@ using GlDeleteProgram = void(APIENTRY*)(GLuint);
 using GlUseProgram = void(APIENTRY*)(GLuint);
 using GlGetUniformLocation = GLint(APIENTRY*)(GLuint, const GlChar*);
 using GlUniform1i = void(APIENTRY*)(GLint, GLint);
+using GlUniform1iv = void(APIENTRY*)(GLint, GLsizei, const GLint*);
 using GlActiveTexture = void(APIENTRY*)(GLenum);
 
 template <typename T>
@@ -93,6 +95,7 @@ struct GlApi {
     GlUseProgram useProgram = nullptr;
     GlGetUniformLocation getUniformLocation = nullptr;
     GlUniform1i uniform1i = nullptr;
+    GlUniform1iv uniform1iv = nullptr;
     GlActiveTexture activeTexture = nullptr;
 
     bool load() {
@@ -111,6 +114,7 @@ struct GlApi {
                loadGlFunction(useProgram, "glUseProgram") &&
                loadGlFunction(getUniformLocation, "glGetUniformLocation") &&
                loadGlFunction(uniform1i, "glUniform1i") &&
+               loadGlFunction(uniform1iv, "glUniform1iv") &&
                loadGlFunction(activeTexture, "glActiveTexture");
     }
 };
@@ -130,8 +134,31 @@ constexpr const char* kFragmentShader = R"(
 uniform sampler2D tex_y;
 uniform sampler2D tex_u;
 uniform sampler2D tex_v;
-uniform int filter_mode;
+uniform int filter_count;
+uniform int filter_modes[4];
 varying vec2 v_texCoord;
+
+vec3 applyFilter(int mode, vec3 rgb) {
+    if (mode == 1) {
+        float gray = dot(rgb, vec3(0.299, 0.587, 0.114));
+        return vec3(gray);
+    }
+    if (mode == 2) {
+        return vec3(rgb.r * 1.08 + 0.03, rgb.g * 1.02, rgb.b * 0.90);
+    }
+    if (mode == 3) {
+        return vec3(1.0) - rgb;
+    }
+    if (mode == 4) {
+        return (rgb - vec3(0.5)) * 1.18 + vec3(0.5);
+    }
+    if (mode == 5) {
+        float gray = dot(rgb, vec3(0.299, 0.587, 0.114));
+        return mix(vec3(gray), rgb, 1.22);
+    }
+
+    return rgb;
+}
 
 void main() {
     float y = texture2D(tex_y, v_texCoord).r;
@@ -143,51 +170,176 @@ void main() {
     rgb.g = y - 0.344136 * u - 0.714136 * v;
     rgb.b = y + 1.772 * u;
 
-    if (filter_mode == 1) {
-        float gray = dot(rgb, vec3(0.299, 0.587, 0.114));
-        rgb = vec3(gray);
-    } else if (filter_mode == 2) {
-        rgb = vec3(rgb.r * 1.08 + 0.03, rgb.g * 1.02, rgb.b * 0.90);
-    } else if (filter_mode == 3) {
-        rgb = vec3(1.0) - rgb;
+    if (filter_count > 0) {
+        rgb = applyFilter(filter_modes[0], rgb);
+    }
+    if (filter_count > 1) {
+        rgb = applyFilter(filter_modes[1], rgb);
+    }
+    if (filter_count > 2) {
+        rgb = applyFilter(filter_modes[2], rgb);
+    }
+    if (filter_count > 3) {
+        rgb = applyFilter(filter_modes[3], rgb);
     }
 
     gl_FragColor = vec4(clamp(rgb, 0.0, 1.0), 1.0);
 }
 )";
 
-int parseFilterMode(std::string filterName) {
+constexpr size_t kMaxFilterStages = 4;
+
+enum class ShaderFilter : GLint {
+    None = 0,
+    Grayscale = 1,
+    Warm = 2,
+    Invert = 3,
+    Contrast = 4,
+    Saturation = 5
+};
+
+ShaderFilter parseFilterMode(std::string filterName) {
     std::transform(filterName.begin(), filterName.end(), filterName.begin(),
                    [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
 
     if (filterName == "none" || filterName == "off" || filterName == "normal") {
-        return 0;
+        return ShaderFilter::None;
     }
     if (filterName == "grayscale" || filterName == "gray" || filterName == "mono") {
-        return 1;
+        return ShaderFilter::Grayscale;
     }
     if (filterName == "warm") {
-        return 2;
+        return ShaderFilter::Warm;
     }
     if (filterName == "invert" || filterName == "negative") {
-        return 3;
+        return ShaderFilter::Invert;
+    }
+    if (filterName == "contrast") {
+        return ShaderFilter::Contrast;
+    }
+    if (filterName == "saturation" || filterName == "saturate") {
+        return ShaderFilter::Saturation;
     }
 
     SPDLOG_WARN("Unknown OpenGL filter '{}', using none", filterName);
-    return 0;
+    return ShaderFilter::None;
 }
 
-const char* filterName(int filterMode) {
+const char* filterName(ShaderFilter filterMode) {
     switch (filterMode) {
-        case 1:
+        case ShaderFilter::Grayscale:
             return "grayscale";
-        case 2:
+        case ShaderFilter::Warm:
             return "warm";
-        case 3:
+        case ShaderFilter::Invert:
             return "invert";
+        case ShaderFilter::Contrast:
+            return "contrast";
+        case ShaderFilter::Saturation:
+            return "saturation";
         default:
             return "none";
     }
+}
+
+struct ShaderFilterPipeline {
+    std::array<ShaderFilter, kMaxFilterStages> filters{};
+    size_t count = 0;
+
+    static ShaderFilterPipeline fromNames(const std::vector<std::string>& filterNames) {
+        ShaderFilterPipeline pipeline;
+        for (const std::string& name : filterNames) {
+            if (pipeline.count >= pipeline.filters.size()) {
+                SPDLOG_WARN("Ignoring OpenGL filter '{}' because the shader pipeline is full", name);
+                continue;
+            }
+
+            const ShaderFilter filter = parseFilterMode(name);
+            if (filter == ShaderFilter::None) {
+                continue;
+            }
+
+            pipeline.filters[pipeline.count] = filter;
+            ++pipeline.count;
+        }
+
+        return pipeline;
+    }
+
+    static ShaderFilterPipeline single(ShaderFilter filter) {
+        ShaderFilterPipeline pipeline;
+        if (filter != ShaderFilter::None) {
+            pipeline.filters[0] = filter;
+            pipeline.count = 1;
+        }
+        return pipeline;
+    }
+
+    void setPreviewFilter(ShaderFilter filter) {
+        *this = single(filter);
+    }
+
+    std::array<GLint, kMaxFilterStages> toUniformModes() const {
+        std::array<GLint, kMaxFilterStages> values{};
+        for (size_t i = 0; i < count; ++i) {
+            values[i] = static_cast<GLint>(filters[i]);
+        }
+        return values;
+    }
+
+    std::string describe() const {
+        if (count == 0) {
+            return "none";
+        }
+
+        std::string result;
+        for (size_t i = 0; i < count; ++i) {
+            if (!result.empty()) {
+                result += " -> ";
+            }
+            result += filterName(filters[i]);
+        }
+        return result;
+    }
+};
+
+struct ViewportRect {
+    GLint x = 0;
+    GLint y = 0;
+    GLsizei width = 0;
+    GLsizei height = 0;
+};
+
+ViewportRect calculateAspectFitViewport(int drawableWidth, int drawableHeight,
+                                        int videoWidth, int videoHeight) {
+    if (drawableWidth <= 0 || drawableHeight <= 0 ||
+        videoWidth <= 0 || videoHeight <= 0) {
+        return {};
+    }
+
+    const double drawableAspect =
+        static_cast<double>(drawableWidth) / static_cast<double>(drawableHeight);
+    const double videoAspect =
+        static_cast<double>(videoWidth) / static_cast<double>(videoHeight);
+
+    int fittedWidth = drawableWidth;
+    int fittedHeight = drawableHeight;
+
+    if (drawableAspect > videoAspect) {
+        fittedWidth = static_cast<int>(static_cast<double>(drawableHeight) * videoAspect);
+    } else {
+        fittedHeight = static_cast<int>(static_cast<double>(drawableWidth) / videoAspect);
+    }
+
+    fittedWidth = std::max(1, fittedWidth);
+    fittedHeight = std::max(1, fittedHeight);
+
+    return {
+        static_cast<GLint>((drawableWidth - fittedWidth) / 2),
+        static_cast<GLint>((drawableHeight - fittedHeight) / 2),
+        static_cast<GLsizei>(fittedWidth),
+        static_cast<GLsizei>(fittedHeight)
+    };
 }
 
 using Glyph = std::array<uint8_t, 7>;
@@ -230,6 +382,7 @@ Glyph glyphFor(char ch) {
 class OpenGlVideoRenderer final : public VideoRenderer {
 public:
     explicit OpenGlVideoRenderer(const std::string& filterName = "none");
+    explicit OpenGlVideoRenderer(const std::vector<std::string>& filterNames);
     ~OpenGlVideoRenderer() override;
 
     bool initialize(int width, int height, const std::string& title) override;
@@ -247,6 +400,8 @@ private:
     GLuint compileShader(GLenum type, const char* source);
     bool createTextures();
     void setupTexture(GLuint texture) const;
+    void uploadFilterPipeline();
+    void applyVideoViewport() const;
     bool renderYuv(const uint8_t* y, const uint8_t* u, const uint8_t* v,
                    int width, int height);
     void drawOverlay();
@@ -263,8 +418,10 @@ private:
     GLint yLocation_;
     GLint uLocation_;
     GLint vLocation_;
-    GLint filterModeLocation_;
-    int filterMode_;
+    GLint filterCountLocation_;
+    GLint filterModesLocation_;
+    ShaderFilterPipeline filterPipeline_;
+    int previewFilterMode_;
     PlaybackStats playbackStats_;
 
     int width_;
@@ -274,6 +431,10 @@ private:
 };
 
 OpenGlVideoRenderer::OpenGlVideoRenderer(const std::string& filterName)
+    : OpenGlVideoRenderer(std::vector<std::string>{filterName})
+{}
+
+OpenGlVideoRenderer::OpenGlVideoRenderer(const std::vector<std::string>& filterNames)
     : window_(nullptr)
     , glContext_(nullptr)
     , program_(0)
@@ -281,8 +442,10 @@ OpenGlVideoRenderer::OpenGlVideoRenderer(const std::string& filterName)
     , yLocation_(-1)
     , uLocation_(-1)
     , vLocation_(-1)
-    , filterModeLocation_(-1)
-    , filterMode_(parseFilterMode(filterName))
+    , filterCountLocation_(-1)
+    , filterModesLocation_(-1)
+    , filterPipeline_(ShaderFilterPipeline::fromNames(filterNames))
+    , previewFilterMode_(0)
     , playbackStats_()
     , width_(0)
     , height_(0)
@@ -344,7 +507,6 @@ bool OpenGlVideoRenderer::initialize(int width, int height, const std::string& t
         return false;
     }
 
-    glViewport(0, 0, width, height);
     glClearColor(0.0F, 0.0F, 0.0F, 1.0F);
 
     initialized_ = true;
@@ -389,18 +551,13 @@ bool OpenGlVideoRenderer::handleEvents() {
                     return false;
                 }
                 if (event.key.keysym.sym == SDLK_f) {
-                    filterMode_ = (filterMode_ + 1) % 4;
-                    if (apiLoaded_ && filterModeLocation_ >= 0) {
-                        gl_.useProgram(program_);
-                        gl_.uniform1i(filterModeLocation_, filterMode_);
-                    }
-                    SPDLOG_INFO("OpenGL filter: {}", filterName(filterMode_));
+                    previewFilterMode_ = (previewFilterMode_ + 1) % 6;
+                    filterPipeline_.setPreviewFilter(static_cast<ShaderFilter>(previewFilterMode_));
+                    uploadFilterPipeline();
+                    SPDLOG_INFO("OpenGL shader pipeline: {}", filterPipeline_.describe());
                 }
                 break;
             case SDL_WINDOWEVENT:
-                if (event.window.event == SDL_WINDOWEVENT_SIZE_CHANGED) {
-                    glViewport(0, 0, event.window.data1, event.window.data2);
-                }
                 break;
             default:
                 break;
@@ -440,7 +597,8 @@ void OpenGlVideoRenderer::close() {
     yLocation_ = -1;
     uLocation_ = -1;
     vLocation_ = -1;
-    filterModeLocation_ = -1;
+    filterCountLocation_ = -1;
+    filterModesLocation_ = -1;
     width_ = 0;
     height_ = 0;
     initialized_ = false;
@@ -489,14 +647,46 @@ bool OpenGlVideoRenderer::createProgram() {
     yLocation_ = gl_.getUniformLocation(program_, "tex_y");
     uLocation_ = gl_.getUniformLocation(program_, "tex_u");
     vLocation_ = gl_.getUniformLocation(program_, "tex_v");
-    filterModeLocation_ = gl_.getUniformLocation(program_, "filter_mode");
+    filterCountLocation_ = gl_.getUniformLocation(program_, "filter_count");
+    filterModesLocation_ = gl_.getUniformLocation(program_, "filter_modes[0]");
     gl_.uniform1i(yLocation_, 0);
     gl_.uniform1i(uLocation_, 1);
     gl_.uniform1i(vLocation_, 2);
-    gl_.uniform1i(filterModeLocation_, filterMode_);
-    SPDLOG_INFO("OpenGL filter: {}", filterName(filterMode_));
+    uploadFilterPipeline();
+    SPDLOG_INFO("OpenGL shader pipeline: {}", filterPipeline_.describe());
 
     return true;
+}
+
+void OpenGlVideoRenderer::uploadFilterPipeline() {
+    if (!apiLoaded_ || program_ == 0) {
+        return;
+    }
+
+    gl_.useProgram(program_);
+    if (filterCountLocation_ >= 0) {
+        gl_.uniform1i(filterCountLocation_, static_cast<GLint>(filterPipeline_.count));
+    }
+    if (filterModesLocation_ >= 0) {
+        const auto uniformModes = filterPipeline_.toUniformModes();
+        gl_.uniform1iv(filterModesLocation_,
+                       static_cast<GLsizei>(uniformModes.size()),
+                       uniformModes.data());
+    }
+}
+
+void OpenGlVideoRenderer::applyVideoViewport() const {
+    if (!window_) {
+        return;
+    }
+
+    int drawableWidth = 0;
+    int drawableHeight = 0;
+    SDL_GL_GetDrawableSize(window_, &drawableWidth, &drawableHeight);
+    const ViewportRect viewport =
+        calculateAspectFitViewport(drawableWidth, drawableHeight, width_, height_);
+
+    glViewport(viewport.x, viewport.y, viewport.width, viewport.height);
 }
 
 GLuint OpenGlVideoRenderer::compileShader(GLenum type, const char* source) {
@@ -587,6 +777,7 @@ bool OpenGlVideoRenderer::renderYuv(const uint8_t* y, const uint8_t* u, const ui
     gl_.activeTexture(GL_TEXTURE0);
     gl_.useProgram(program_);
     glClear(GL_COLOR_BUFFER_BIT);
+    applyVideoViewport();
 
     glBegin(GL_TRIANGLE_STRIP);
     glTexCoord2f(0.0F, 1.0F);
@@ -623,10 +814,10 @@ void OpenGlVideoRenderer::drawOverlay() {
         return;
     }
 
-    int windowWidth = 0;
-    int windowHeight = 0;
-    SDL_GetWindowSize(window_, &windowWidth, &windowHeight);
-    if (windowWidth <= 0 || windowHeight <= 0) {
+    int drawableWidth = 0;
+    int drawableHeight = 0;
+    SDL_GL_GetDrawableSize(window_, &drawableWidth, &drawableHeight);
+    if (drawableWidth <= 0 || drawableHeight <= 0) {
         return;
     }
 
@@ -642,11 +833,12 @@ void OpenGlVideoRenderer::drawOverlay() {
     const float width = static_cast<float>(maxLineLength) * 6.0F * scale + 12.0F;
     const float height = 12.0F + lineHeight * static_cast<float>(lines.size());
 
+    glViewport(0, 0, drawableWidth, drawableHeight);
     gl_.useProgram(0);
     glMatrixMode(GL_PROJECTION);
     glPushMatrix();
     glLoadIdentity();
-    glOrtho(0.0, static_cast<double>(windowWidth), static_cast<double>(windowHeight), 0.0, -1.0, 1.0);
+    glOrtho(0.0, static_cast<double>(drawableWidth), static_cast<double>(drawableHeight), 0.0, -1.0, 1.0);
 
     glMatrixMode(GL_MODELVIEW);
     glPushMatrix();
@@ -720,6 +912,10 @@ std::unique_ptr<VideoRenderer> createOpenGlVideoRenderer() {
 
 std::unique_ptr<VideoRenderer> createOpenGlVideoRenderer(const std::string& filterName) {
     return std::make_unique<OpenGlVideoRenderer>(filterName);
+}
+
+std::unique_ptr<VideoRenderer> createOpenGlVideoRenderer(const std::vector<std::string>& filterNames) {
+    return std::make_unique<OpenGlVideoRenderer>(filterNames);
 }
 
 } // namespace rtsp

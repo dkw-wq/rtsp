@@ -12,6 +12,8 @@
 #include <chrono>
 #include <cctype>
 #include <cstdint>
+#include <algorithm>
+#include <vector>
 
 namespace {
 
@@ -46,6 +48,21 @@ bool parseLogLevel(const std::string& value, spdlog::level::level_enum& level) {
     return true;
 }
 
+std::string describeFilters(const std::vector<std::string>& filters) {
+    if (filters.empty()) {
+        return "none";
+    }
+
+    std::string result;
+    for (const std::string& filter : filters) {
+        if (!result.empty()) {
+            result += " -> ";
+        }
+        result += filter;
+    }
+    return result;
+}
+
 } // namespace
 
 // 全局变量用于控制主循环
@@ -61,9 +78,12 @@ int main(int argc, char* argv[]) {
     int height = 1080;
     std::string logLevelName = "info";
     std::string rendererName = "sdl";
-    std::string openglFilterName = "none";
+    std::vector<std::string> openglFilterNames = {"none"};
     size_t jitterMaxSize = 30;
     uint32_t jitterLatencyMs = 100;
+    bool reconnectEnabled = true;
+    uint32_t reconnectInitialDelayMs = 1000;
+    uint32_t reconnectMaxDelayMs = 5000;
     std::string configWarning;
 
     // 尝试加载配置文件
@@ -84,8 +104,13 @@ int main(int argc, char* argv[]) {
         if (config["renderer"]) {
             rendererName = config["renderer"].as<std::string>();
         }
-        if (config["opengl_filter"]) {
-            openglFilterName = config["opengl_filter"].as<std::string>();
+        if (config["opengl_filters"] && config["opengl_filters"].IsSequence()) {
+            openglFilterNames.clear();
+            for (const auto& filterNode : config["opengl_filters"]) {
+                openglFilterNames.push_back(filterNode.as<std::string>());
+            }
+        } else if (config["opengl_filter"]) {
+            openglFilterNames = {config["opengl_filter"].as<std::string>()};
         }
         if (config["jitter_buffer"]) {
             const auto jitterConfig = config["jitter_buffer"];
@@ -99,6 +124,24 @@ int main(int argc, char* argv[]) {
                 int configuredLatencyMs = jitterConfig["latency_ms"].as<int>();
                 if (configuredLatencyMs >= 0) {
                     jitterLatencyMs = static_cast<uint32_t>(configuredLatencyMs);
+                }
+            }
+        }
+        if (config["reconnect"]) {
+            const auto reconnectConfig = config["reconnect"];
+            if (reconnectConfig["enabled"]) {
+                reconnectEnabled = reconnectConfig["enabled"].as<bool>();
+            }
+            if (reconnectConfig["initial_delay_ms"]) {
+                int configuredInitialDelay = reconnectConfig["initial_delay_ms"].as<int>();
+                if (configuredInitialDelay >= 0) {
+                    reconnectInitialDelayMs = static_cast<uint32_t>(configuredInitialDelay);
+                }
+            }
+            if (reconnectConfig["max_delay_ms"]) {
+                int configuredMaxDelay = reconnectConfig["max_delay_ms"].as<int>();
+                if (configuredMaxDelay >= 0) {
+                    reconnectMaxDelayMs = static_cast<uint32_t>(configuredMaxDelay);
                 }
             }
         }
@@ -124,8 +167,10 @@ int main(int argc, char* argv[]) {
 
     SPDLOG_INFO("RTSP URL: {}", rtspUrl);
     SPDLOG_INFO("Renderer backend: {}", rendererName);
-    SPDLOG_INFO("OpenGL filter: {}", openglFilterName);
+    SPDLOG_INFO("OpenGL shader pipeline: {}", describeFilters(openglFilterNames));
     SPDLOG_INFO("Jitter buffer: max_size={}, latency_ms={}", jitterMaxSize, jitterLatencyMs);
+    SPDLOG_INFO("Reconnect: enabled={}, initial_delay_ms={}, max_delay_ms={}",
+                reconnectEnabled, reconnectInitialDelayMs, reconnectMaxDelayMs);
 
     // 创建组件
     auto rtspClient = std::make_unique<rtsp::RtspClient>();
@@ -133,7 +178,7 @@ int main(int argc, char* argv[]) {
     std::unique_ptr<rtsp::VideoRenderer> renderer;
     const std::string rendererBackend = toLower(rendererName);
     if (rendererBackend == "opengl" || rendererBackend == "gl") {
-        renderer = rtsp::createOpenGlVideoRenderer(openglFilterName);
+        renderer = rtsp::createOpenGlVideoRenderer(openglFilterNames);
     } else {
         if (rendererBackend != "sdl") {
             SPDLOG_WARN("Unknown renderer backend '{}', using sdl", rendererName);
@@ -151,29 +196,70 @@ int main(int argc, char* argv[]) {
         SPDLOG_ERROR("RTSP Error: {}", error);
     });
 
-    // 连接RTSP流
-    if (!rtspClient->connect(rtspUrl)) {
-        SPDLOG_ERROR("Failed to connect to RTSP stream");
+    auto waitBeforeReconnect = [&](uint32_t delayMs) {
+        const auto deadline =
+            std::chrono::steady_clock::now() + std::chrono::milliseconds(delayMs);
+        while (g_running && std::chrono::steady_clock::now() < deadline) {
+            if (renderer->isInitialized() && !renderer->handleEvents()) {
+                g_running = false;
+                return false;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        }
+        return g_running;
+    };
+
+    auto connectStream = [&](bool reconnecting) {
+        uint32_t delayMs = reconnectInitialDelayMs;
+
+        while (g_running) {
+            if (reconnecting) {
+                SPDLOG_INFO("Reconnecting to RTSP stream...");
+            }
+
+            if (rtspClient->connect(rtspUrl)) {
+                const int newWidth = rtspClient->getWidth();
+                const int newHeight = rtspClient->getHeight();
+                SPDLOG_INFO("Video resolution: {}x{}", newWidth, newHeight);
+
+                if (!renderer->isInitialized() ||
+                    newWidth != renderer->getWidth() ||
+                    newHeight != renderer->getHeight()) {
+                    if (!renderer->initialize(newWidth, newHeight, "RTSP Player")) {
+                        SPDLOG_ERROR("Failed to initialize renderer");
+                        rtspClient->disconnect();
+                        return false;
+                    }
+                }
+
+                width = newWidth;
+                height = newHeight;
+                jitterBuffer->clear();
+                rtspClient->start();
+                SPDLOG_INFO("Streaming started, press ESC or Q to quit");
+                return true;
+            }
+
+            if (!reconnectEnabled) {
+                SPDLOG_ERROR("Failed to connect to RTSP stream");
+                return false;
+            }
+
+            SPDLOG_WARN("RTSP connect failed, retrying in {} ms", delayMs);
+            if (!waitBeforeReconnect(delayMs)) {
+                return false;
+            }
+
+            const uint32_t nextDelay = delayMs == 0 ? 1 : delayMs * 2;
+            delayMs = std::min(nextDelay, reconnectMaxDelayMs);
+        }
+
+        return false;
+    };
+
+    if (!connectStream(false)) {
         return -1;
     }
-
-    // 获取视频参数
-    width = rtspClient->getWidth();
-    height = rtspClient->getHeight();
-
-    SPDLOG_INFO("Video resolution: {}x{}", width, height);
-
-    // 初始化渲染器
-    if (!renderer->initialize(width, height, "RTSP Player")) {
-        SPDLOG_ERROR("Failed to initialize renderer");
-        rtspClient->disconnect();
-        return -1;
-    }
-
-    // 开始接收流
-    rtspClient->start();
-
-    SPDLOG_INFO("Streaming started, press ESC or Q to quit");
 
     // 主渲染循环
     std::shared_ptr<rtsp::MediaFrame> frame;
@@ -182,6 +268,23 @@ int main(int argc, char* argv[]) {
     auto lastFpsUpdateTime = std::chrono::steady_clock::now();
 
     while (g_running && renderer->handleEvents()) {
+        if (!rtspClient->isRunning()) {
+            SPDLOG_WARN("RTSP receive loop stopped");
+            rtspClient->stop();
+            rtspClient->disconnect();
+            jitterBuffer->clear();
+
+            playbackStats = {};
+            renderedFramesSinceFpsUpdate = 0;
+            lastFpsUpdateTime = std::chrono::steady_clock::now();
+
+            if (!reconnectEnabled || !connectStream(true)) {
+                break;
+            }
+
+            continue;
+        }
+
         // 从jitter buffer获取帧
         if (jitterBuffer->pop(frame, 10)) {
             const auto now = std::chrono::steady_clock::now();

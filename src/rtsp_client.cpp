@@ -139,7 +139,7 @@ public:
     }
 
     void close() {
-        running_ = false;
+        stop();
         
         if (codecContext_) {
             avcodec_free_context(&codecContext_);
@@ -185,7 +185,7 @@ public:
     }
 
     bool isRunning() const {
-        return running_;
+        return running_.load();
     }
 
     int getWidth() const { return width_; }
@@ -209,20 +209,34 @@ private:
 
         AVPacket* packet = av_packet_alloc();
         AVFrame* frame = av_frame_alloc();
+        auto lastReadProgress = std::chrono::steady_clock::now();
 
         while (running_) {
             int ret = av_read_frame(formatContext_, packet);
             if (ret < 0) {
-                if (ret == AVERROR_EOF || ret == AVERROR(EAGAIN)) {
+                if (ret == AVERROR(EAGAIN)) {
+                    const auto stalledFor = std::chrono::steady_clock::now() - lastReadProgress;
+                    if (stalledFor >= std::chrono::seconds(5)) {
+                        SPDLOG_ERROR("RTSP read stalled for 5 seconds");
+                        if (errorCallback_) {
+                            errorCallback_("RTSP read stalled");
+                        }
+                        break;
+                    }
                     std::this_thread::sleep_for(std::chrono::milliseconds(10));
                     continue;
                 }
-                SPDLOG_ERROR("Read frame error: {}", ret);
+
+                char errbuf[128];
+                av_strerror(ret, errbuf, sizeof(errbuf));
+                SPDLOG_ERROR("Read frame error: {}", errbuf);
                 if (errorCallback_) {
-                    errorCallback_(std::string("Read frame error: ") + std::to_string(ret));
+                    errorCallback_(std::string("Read frame error: ") + errbuf);
                 }
                 break;
             }
+
+            lastReadProgress = std::chrono::steady_clock::now();
 
             if (packet->stream_index == videoStream_) {
                 // 发送数据包到解码器
@@ -314,10 +328,11 @@ private:
         av_frame_free(&frame);
         av_packet_free(&packet);
 
+        running_ = false;
         SPDLOG_INFO("Receive loop ended");
     }
 
-    bool running_;
+    std::atomic<bool> running_;
     std::thread receiveThread_;
     FrameCallback frameCallback_;
     ErrorCallback errorCallback_;

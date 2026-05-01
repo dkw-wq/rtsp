@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <vector>
 #include "jitter_buffer.hpp"
 
 namespace rtsp {
@@ -76,5 +77,6 @@ public:
 std::unique_ptr<VideoRenderer> createSdlVideoRenderer();
 std::unique_ptr<VideoRenderer> createOpenGlVideoRenderer();
 std::unique_ptr<VideoRenderer> createOpenGlVideoRenderer(const std::string& filterName);
+std::unique_ptr<VideoRenderer> createOpenGlVideoRenderer(const std::vector<std::string>& filterNames);
 
 } // namespace rtsp

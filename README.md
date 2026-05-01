@@ -14,11 +14,22 @@ D:\vcpkg\vcpkg.exe install ffmpeg:x64-windows sdl2:x64-windows yaml-cpp:x64-wind
 
 renderer: "opengl"
 
+OpenGL 会保持视频原始宽高比，窗口比例不匹配时自动居中并显示黑边。
+
 OpenGL 滤镜：
 
-opengl_filter: "warm"
+opengl_filters:
+  - warm
+  - contrast
 
-可选值：none, grayscale, warm, invert。运行时按 F 可以切换滤镜。
+可选值：none, grayscale, warm, invert, contrast, saturation。运行时按 F 可以切换单滤镜预览。
+
+断线重连：
+
+reconnect:
+  enabled: true
+  initial_delay_ms: 1000
+  max_delay_ms: 5000
 
 
 启动时传真实 RTSP 地址：

@@ -12,11 +12,19 @@ jitter_buffer:
   max_size: 30      # 最大缓冲帧数
   latency_ms: 100  # 目标延迟(毫秒)
 
+# 断线重连设置
+reconnect:
+  enabled: true
+  initial_delay_ms: 1000
+  max_delay_ms: 5000
+
 # 日志级别: trace, debug, info, warn, error, critical
 log_level: "info"
 
 # 渲染后端: sdl, opengl
 renderer: "opengl"
 
-# OpenGL滤镜: none, grayscale, warm, invert
-opengl_filter: "warm"
+# OpenGL shader滤镜管线: none, grayscale, warm, invert, contrast, saturation
+opengl_filters:
+  - warm
+  - contrast
