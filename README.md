@@ -14,7 +14,15 @@ D:\vcpkg\vcpkg.exe install ffmpeg:x64-windows sdl2:x64-windows yaml-cpp:x64-wind
 
 renderer: "opengl"
 
+启用 NVIDIA NVDEC/CUDA 硬件解码：
+
+hw_decode: "cuda"
+
+如果当前 FFmpeg、驱动或显卡不支持 CUDA 硬解，会自动尝试 d3d11va/dxva2，再回退到软件解码。
+
 OpenGL 会保持视频原始宽高比，窗口比例不匹配时自动居中并显示黑边。
+
+OpenGL 渲染路径使用 NV12 两纹理：Y 平面 + 交错 UV 平面。NV12 更贴近硬件解码输出，避免把 UV 拆成两个纹理后再上传。
 
 OpenGL 滤镜：
 

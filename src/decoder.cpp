@@ -122,6 +122,7 @@ std::shared_ptr<MediaFrame> Decoder::decode(const uint8_t* data, size_t size,
     // 创建MediaFrame
     auto mediaFrame = std::make_shared<MediaFrame>();
     mediaFrame->type = MediaFrame::Type::VIDEO;
+    mediaFrame->pixelFormat = MediaFrame::PixelFormat::YUV420P;
     mediaFrame->width = frame_->width;
     mediaFrame->height = frame_->height;
     mediaFrame->pts = frame_->pts;

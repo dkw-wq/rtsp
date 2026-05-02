@@ -19,7 +19,13 @@ struct MediaFrame {
         AUDIO
     };
 
+    enum class PixelFormat {
+        YUV420P,
+        NV12
+    };
+
     Type type;
+    PixelFormat pixelFormat;
     std::vector<uint8_t> data;        // 解码后的原始数据或压缩数据
     int width;                         // 视频宽度
     int height;                        // 视频高度
@@ -30,6 +36,7 @@ struct MediaFrame {
 
     MediaFrame() 
         : type(Type::VIDEO)
+        , pixelFormat(PixelFormat::YUV420P)
         , width(0)
         , height(0)
         , pts(0)

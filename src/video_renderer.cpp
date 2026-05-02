@@ -25,8 +25,7 @@ public:
     bool isInitialized() const override;
 
 private:
-    bool renderYuv(const uint8_t* y, const uint8_t* u, const uint8_t* v,
-                   int width, int height);
+    bool renderNv12(const uint8_t* y, const uint8_t* uv, int width, int height);
 
     SDL_Window* window_;
     SDL_Renderer* renderer_;
@@ -93,10 +92,10 @@ bool SdlVideoRenderer::initialize(int width, int height, const std::string& titl
         return false;
     }
 
-    // 创建YUV纹理
+    // 创建NV12纹理
     texture_ = SDL_CreateTexture(
         renderer_,
-        SDL_PIXELFORMAT_YV12,
+        SDL_PIXELFORMAT_NV12,
         SDL_TEXTUREACCESS_STREAMING,
         width,
         height
@@ -125,20 +124,21 @@ bool SdlVideoRenderer::render(const std::shared_ptr<MediaFrame>& frame) {
         return false;
     }
 
-    return renderYuv(
-        frame->data.data(),
-        frame->data.data() + frame->width * frame->height,
-        frame->data.data() + frame->width * frame->height * 5 / 4,
-        frame->width,
-        frame->height
-    );
+    if (frame->pixelFormat != MediaFrame::PixelFormat::NV12) {
+        SPDLOG_ERROR("SDL renderer expected NV12 frame");
+        return false;
+    }
+
+    const size_t ySize = static_cast<size_t>(frame->width) * static_cast<size_t>(frame->height);
+    return renderNv12(frame->data.data(), frame->data.data() + ySize,
+                      frame->width, frame->height);
 }
 
 void SdlVideoRenderer::setPlaybackStats(const PlaybackStats&) {}
 
-bool SdlVideoRenderer::renderYuv(const uint8_t* y, const uint8_t* u, const uint8_t* v,
-                                 int width, int height) {
-    if (!initialized_ || !y || !u || !v) {
+bool SdlVideoRenderer::renderNv12(const uint8_t* y, const uint8_t* uv,
+                                  int width, int height) {
+    if (!initialized_ || !y || !uv) {
         return false;
     }
 
@@ -149,20 +149,17 @@ bool SdlVideoRenderer::renderYuv(const uint8_t* y, const uint8_t* u, const uint8
     }
 
     // 更新纹理
-    int pitch = width;
-    int ret = SDL_UpdateYUVTexture(
+    const int pitch = width;
+    int ret = SDL_UpdateNVTexture(
         texture_,
         nullptr,
         y,
         pitch,
-        u,
-        pitch / 2,
-        v,
-        pitch / 2
-    );
+        uv,
+        pitch);
 
     if (ret < 0) {
-        SPDLOG_ERROR("SDL_UpdateYUVTexture failed: {}", SDL_GetError());
+        SPDLOG_ERROR("SDL_UpdateNVTexture failed: {}", SDL_GetError());
         return false;
     }
 

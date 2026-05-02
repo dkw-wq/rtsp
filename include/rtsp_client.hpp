@@ -66,6 +66,23 @@ public:
     void setErrorCallback(ErrorCallback callback);
 
     /**
+     * @brief 设置硬件解码后端
+     * @param backend none, cuda
+     */
+    void setHardwareDecode(const std::string& backend);
+
+    /**
+     * @brief 获取当前实际解码后端
+     * @return CPU, CUDA
+     */
+    std::string getDecodeBackend() const;
+
+    /**
+     * @brief 获取硬解状态说明
+     */
+    std::string getHardwareDecodeStatus() const;
+
+    /**
      * @brief 检查是否正在运行
      */
     bool isRunning() const;

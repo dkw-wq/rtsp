@@ -15,6 +15,8 @@ struct PlaybackStats {
     uint64_t droppedFrames = 0;
     size_t jitterBufferSize = 0;
     uint32_t latencyMs = 0;
+    std::string decoderBackend = "CPU";
+    std::string hardwareDecodeStatus = "OFF";
 };
 
 /**

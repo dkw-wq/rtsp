@@ -24,6 +24,18 @@ std::string toLower(std::string value) {
     return value;
 }
 
+std::string toUpper(std::string value) {
+    for (char& ch : value) {
+        ch = static_cast<char>(std::toupper(static_cast<unsigned char>(ch)));
+    }
+    return value;
+}
+
+std::string displayDecodeBackend(const std::string& backend) {
+    const std::string normalized = toLower(backend);
+    return normalized == "cpu" ? "CPU" : toUpper(normalized);
+}
+
 bool parseLogLevel(const std::string& value, spdlog::level::level_enum& level) {
     const std::string normalized = toLower(value);
 
@@ -78,6 +90,7 @@ int main(int argc, char* argv[]) {
     int height = 1080;
     std::string logLevelName = "info";
     std::string rendererName = "sdl";
+    std::string hwDecodeBackend = "none";
     std::vector<std::string> openglFilterNames = {"none"};
     size_t jitterMaxSize = 30;
     uint32_t jitterLatencyMs = 100;
@@ -103,6 +116,9 @@ int main(int argc, char* argv[]) {
         }
         if (config["renderer"]) {
             rendererName = config["renderer"].as<std::string>();
+        }
+        if (config["hw_decode"]) {
+            hwDecodeBackend = config["hw_decode"].as<std::string>();
         }
         if (config["opengl_filters"] && config["opengl_filters"].IsSequence()) {
             openglFilterNames.clear();
@@ -167,6 +183,7 @@ int main(int argc, char* argv[]) {
 
     SPDLOG_INFO("RTSP URL: {}", rtspUrl);
     SPDLOG_INFO("Renderer backend: {}", rendererName);
+    SPDLOG_INFO("Hardware decode: {}", hwDecodeBackend);
     SPDLOG_INFO("OpenGL shader pipeline: {}", describeFilters(openglFilterNames));
     SPDLOG_INFO("Jitter buffer: max_size={}, latency_ms={}", jitterMaxSize, jitterLatencyMs);
     SPDLOG_INFO("Reconnect: enabled={}, initial_delay_ms={}, max_delay_ms={}",
@@ -174,6 +191,7 @@ int main(int argc, char* argv[]) {
 
     // 创建组件
     auto rtspClient = std::make_unique<rtsp::RtspClient>();
+    rtspClient->setHardwareDecode(hwDecodeBackend);
     auto jitterBuffer = std::make_unique<rtsp::JitterBuffer>(jitterMaxSize, jitterLatencyMs);
     std::unique_ptr<rtsp::VideoRenderer> renderer;
     const std::string rendererBackend = toLower(rendererName);
@@ -264,6 +282,8 @@ int main(int argc, char* argv[]) {
     // 主渲染循环
     std::shared_ptr<rtsp::MediaFrame> frame;
     rtsp::PlaybackStats playbackStats;
+    playbackStats.decoderBackend = displayDecodeBackend(rtspClient->getDecodeBackend());
+    playbackStats.hardwareDecodeStatus = rtspClient->getHardwareDecodeStatus();
     uint64_t renderedFramesSinceFpsUpdate = 0;
     auto lastFpsUpdateTime = std::chrono::steady_clock::now();
 
@@ -275,6 +295,8 @@ int main(int argc, char* argv[]) {
             jitterBuffer->clear();
 
             playbackStats = {};
+            playbackStats.decoderBackend = "CPU";
+            playbackStats.hardwareDecodeStatus = rtspClient->getHardwareDecodeStatus();
             renderedFramesSinceFpsUpdate = 0;
             lastFpsUpdateTime = std::chrono::steady_clock::now();
 
@@ -295,6 +317,8 @@ int main(int argc, char* argv[]) {
             }
 
             const auto jitterStats = jitterBuffer->getStats();
+            playbackStats.decoderBackend = displayDecodeBackend(rtspClient->getDecodeBackend());
+            playbackStats.hardwareDecodeStatus = rtspClient->getHardwareDecodeStatus();
             playbackStats.decodedFrames = jitterStats.totalFrames;
             playbackStats.droppedFrames = jitterStats.droppedFrames;
             playbackStats.jitterBufferSize = jitterStats.bufferSize;

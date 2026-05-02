@@ -132,8 +132,7 @@ void main() {
 constexpr const char* kFragmentShader = R"(
 #version 120
 uniform sampler2D tex_y;
-uniform sampler2D tex_u;
-uniform sampler2D tex_v;
+uniform sampler2D tex_uv;
 uniform int filter_count;
 uniform int filter_modes[4];
 varying vec2 v_texCoord;
@@ -162,8 +161,9 @@ vec3 applyFilter(int mode, vec3 rgb) {
 
 void main() {
     float y = texture2D(tex_y, v_texCoord).r;
-    float u = texture2D(tex_u, v_texCoord).r - 0.5;
-    float v = texture2D(tex_v, v_texCoord).r - 0.5;
+    vec2 uv = texture2D(tex_uv, v_texCoord).ra - vec2(0.5, 0.5);
+    float u = uv.x;
+    float v = uv.y;
 
     vec3 rgb;
     rgb.r = y + 1.402 * v;
@@ -362,7 +362,10 @@ Glyph glyphFor(char ch) {
         case 'D': return {0x1E, 0x11, 0x11, 0x11, 0x11, 0x11, 0x1E};
         case 'E': return {0x1F, 0x10, 0x10, 0x1E, 0x10, 0x10, 0x1F};
         case 'F': return {0x1F, 0x10, 0x10, 0x1E, 0x10, 0x10, 0x10};
+        case 'G': return {0x0E, 0x11, 0x10, 0x17, 0x11, 0x11, 0x0F};
+        case 'H': return {0x11, 0x11, 0x11, 0x1F, 0x11, 0x11, 0x11};
         case 'I': return {0x0E, 0x04, 0x04, 0x04, 0x04, 0x04, 0x0E};
+        case 'K': return {0x11, 0x12, 0x14, 0x18, 0x14, 0x12, 0x11};
         case 'L': return {0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x1F};
         case 'M': return {0x11, 0x1B, 0x15, 0x15, 0x11, 0x11, 0x11};
         case 'N': return {0x11, 0x19, 0x15, 0x13, 0x11, 0x11, 0x11};
@@ -372,8 +375,12 @@ Glyph glyphFor(char ch) {
         case 'S': return {0x0F, 0x10, 0x10, 0x0E, 0x01, 0x01, 0x1E};
         case 'T': return {0x1F, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04};
         case 'U': return {0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0E};
+        case 'V': return {0x11, 0x11, 0x11, 0x11, 0x0A, 0x0A, 0x04};
+        case 'W': return {0x11, 0x11, 0x11, 0x15, 0x15, 0x15, 0x0A};
+        case 'X': return {0x11, 0x11, 0x0A, 0x04, 0x0A, 0x11, 0x11};
         case 'Y': return {0x11, 0x11, 0x0A, 0x04, 0x04, 0x04, 0x04};
         case ':': return {0x00, 0x04, 0x04, 0x00, 0x04, 0x04, 0x00};
+        case '-': return {0x00, 0x00, 0x00, 0x1F, 0x00, 0x00, 0x00};
         case '.': return {0x00, 0x00, 0x00, 0x00, 0x00, 0x0C, 0x0C};
         default: return {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
     }
@@ -402,22 +409,20 @@ private:
     void setupTexture(GLuint texture) const;
     void uploadFilterPipeline();
     void applyVideoViewport() const;
-    bool renderYuv(const uint8_t* y, const uint8_t* u, const uint8_t* v,
-                   int width, int height);
+    bool renderNv12(const uint8_t* y, const uint8_t* uv, int width, int height);
     void drawOverlay();
     void drawText(float x, float y, const std::string& text, float scale) const;
     void drawRect(float x, float y, float width, float height) const;
-    std::array<std::string, 5> makeOverlayLines() const;
+    std::array<std::string, 7> makeOverlayLines() const;
 
     SDL_Window* window_;
     SDL_GLContext glContext_;
     GlApi gl_;
 
     GLuint program_;
-    std::array<GLuint, 3> textures_;
+    std::array<GLuint, 2> textures_;
     GLint yLocation_;
-    GLint uLocation_;
-    GLint vLocation_;
+    GLint uvLocation_;
     GLint filterCountLocation_;
     GLint filterModesLocation_;
     ShaderFilterPipeline filterPipeline_;
@@ -438,10 +443,9 @@ OpenGlVideoRenderer::OpenGlVideoRenderer(const std::vector<std::string>& filterN
     : window_(nullptr)
     , glContext_(nullptr)
     , program_(0)
-    , textures_{0, 0, 0}
+    , textures_{0, 0}
     , yLocation_(-1)
-    , uLocation_(-1)
-    , vLocation_(-1)
+    , uvLocation_(-1)
     , filterCountLocation_(-1)
     , filterModesLocation_(-1)
     , filterPipeline_(ShaderFilterPipeline::fromNames(filterNames))
@@ -522,14 +526,18 @@ bool OpenGlVideoRenderer::render(const std::shared_ptr<MediaFrame>& frame) {
     const size_t ySize = static_cast<size_t>(frame->width) * static_cast<size_t>(frame->height);
     const size_t requiredSize = ySize * 3 / 2;
     if (frame->data.size() < requiredSize) {
-        SPDLOG_ERROR("Frame data too small for YUV420P: {} < {}", frame->data.size(), requiredSize);
+        SPDLOG_ERROR("Frame data too small for NV12: {} < {}", frame->data.size(), requiredSize);
         return false;
     }
 
-    return renderYuv(
+    if (frame->pixelFormat != MediaFrame::PixelFormat::NV12) {
+        SPDLOG_ERROR("OpenGL renderer expected NV12 frame");
+        return false;
+    }
+
+    return renderNv12(
         frame->data.data(),
         frame->data.data() + ySize,
-        frame->data.data() + ySize + (ySize / 4),
         frame->width,
         frame->height);
 }
@@ -573,7 +581,7 @@ void OpenGlVideoRenderer::close() {
 
         if (textures_[0] != 0) {
             glDeleteTextures(static_cast<GLsizei>(textures_.size()), textures_.data());
-            textures_ = {0, 0, 0};
+            textures_ = {0, 0};
         }
 
         if (apiLoaded_ && program_ != 0) {
@@ -595,8 +603,7 @@ void OpenGlVideoRenderer::close() {
     SDL_Quit();
 
     yLocation_ = -1;
-    uLocation_ = -1;
-    vLocation_ = -1;
+    uvLocation_ = -1;
     filterCountLocation_ = -1;
     filterModesLocation_ = -1;
     width_ = 0;
@@ -645,13 +652,11 @@ bool OpenGlVideoRenderer::createProgram() {
 
     gl_.useProgram(program_);
     yLocation_ = gl_.getUniformLocation(program_, "tex_y");
-    uLocation_ = gl_.getUniformLocation(program_, "tex_u");
-    vLocation_ = gl_.getUniformLocation(program_, "tex_v");
+    uvLocation_ = gl_.getUniformLocation(program_, "tex_uv");
     filterCountLocation_ = gl_.getUniformLocation(program_, "filter_count");
     filterModesLocation_ = gl_.getUniformLocation(program_, "filter_modes[0]");
     gl_.uniform1i(yLocation_, 0);
-    gl_.uniform1i(uLocation_, 1);
-    gl_.uniform1i(vLocation_, 2);
+    gl_.uniform1i(uvLocation_, 1);
     uploadFilterPipeline();
     SPDLOG_INFO("OpenGL shader pipeline: {}", filterPipeline_.describe());
 
@@ -727,12 +732,8 @@ bool OpenGlVideoRenderer::createTextures() {
                  GL_LUMINANCE, GL_UNSIGNED_BYTE, nullptr);
 
     glBindTexture(GL_TEXTURE_2D, textures_[1]);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_LUMINANCE, width_ / 2, height_ / 2, 0,
-                 GL_LUMINANCE, GL_UNSIGNED_BYTE, nullptr);
-
-    glBindTexture(GL_TEXTURE_2D, textures_[2]);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_LUMINANCE, width_ / 2, height_ / 2, 0,
-                 GL_LUMINANCE, GL_UNSIGNED_BYTE, nullptr);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_LUMINANCE_ALPHA, width_ / 2, height_ / 2, 0,
+                 GL_LUMINANCE_ALPHA, GL_UNSIGNED_BYTE, nullptr);
 
     return true;
 }
@@ -745,9 +746,9 @@ void OpenGlVideoRenderer::setupTexture(GLuint texture) const {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 }
 
-bool OpenGlVideoRenderer::renderYuv(const uint8_t* y, const uint8_t* u, const uint8_t* v,
-                                    int width, int height) {
-    if (!initialized_ || !y || !u || !v) {
+bool OpenGlVideoRenderer::renderNv12(const uint8_t* y, const uint8_t* uv,
+                                     int width, int height) {
+    if (!initialized_ || !y || !uv) {
         return false;
     }
 
@@ -767,12 +768,7 @@ bool OpenGlVideoRenderer::renderYuv(const uint8_t* y, const uint8_t* u, const ui
     gl_.activeTexture(GL_TEXTURE1);
     glBindTexture(GL_TEXTURE_2D, textures_[1]);
     glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, width / 2, height / 2,
-                    GL_LUMINANCE, GL_UNSIGNED_BYTE, u);
-
-    gl_.activeTexture(GL_TEXTURE2);
-    glBindTexture(GL_TEXTURE_2D, textures_[2]);
-    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, width / 2, height / 2,
-                    GL_LUMINANCE, GL_UNSIGNED_BYTE, v);
+                    GL_LUMINANCE_ALPHA, GL_UNSIGNED_BYTE, uv);
 
     gl_.activeTexture(GL_TEXTURE0);
     gl_.useProgram(program_);
@@ -796,12 +792,14 @@ bool OpenGlVideoRenderer::renderYuv(const uint8_t* y, const uint8_t* u, const ui
     return true;
 }
 
-std::array<std::string, 5> OpenGlVideoRenderer::makeOverlayLines() const {
+std::array<std::string, 7> OpenGlVideoRenderer::makeOverlayLines() const {
     std::ostringstream fps;
     fps << "FPS: " << std::fixed << std::setprecision(1) << playbackStats_.fps;
 
     return {
         fps.str(),
+        "DECODER: " + playbackStats_.decoderBackend,
+        "HW: " + playbackStats_.hardwareDecodeStatus,
         "DECODED: " + std::to_string(playbackStats_.decodedFrames),
         "DROPPED: " + std::to_string(playbackStats_.droppedFrames),
         "BUFFER: " + std::to_string(playbackStats_.jitterBufferSize),

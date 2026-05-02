@@ -24,6 +24,9 @@ log_level: "info"
 # 渲染后端: sdl, opengl
 renderer: "opengl"
 
+# 硬件解码: none, cuda
+hw_decode: "cuda"
+
 # OpenGL shader滤镜管线: none, grayscale, warm, invert, contrast, saturation
 opengl_filters:
   - warm
