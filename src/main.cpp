@@ -195,7 +195,13 @@ int main(int argc, char* argv[]) {
     auto jitterBuffer = std::make_unique<rtsp::JitterBuffer>(jitterMaxSize, jitterLatencyMs);
     std::unique_ptr<rtsp::VideoRenderer> renderer;
     const std::string rendererBackend = toLower(rendererName);
-    if (rendererBackend == "opengl" || rendererBackend == "gl") {
+    const bool usesOpenGlRenderer = rendererBackend == "opengl" || rendererBackend == "gl";
+#ifdef RTSP_ENABLE_CUDA_INTEROP
+    rtspClient->setHardwareFrameOutput(usesOpenGlRenderer);
+#else
+    rtspClient->setHardwareFrameOutput(false);
+#endif
+    if (usesOpenGlRenderer) {
         renderer = rtsp::createOpenGlVideoRenderer(openglFilterNames);
     } else {
         if (rendererBackend != "sdl") {

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <array>
 #include <vector>
 #include <memory>
 #include <queue>
@@ -21,12 +22,16 @@ struct MediaFrame {
 
     enum class PixelFormat {
         YUV420P,
-        NV12
+        NV12,
+        CUDA_NV12
     };
 
     Type type;
     PixelFormat pixelFormat;
     std::vector<uint8_t> data;        // 解码后的原始数据或压缩数据
+    std::array<uintptr_t, 2> gpuData; // GPU端Y/UV平面指针(CUDA_NV12)
+    std::array<int, 2> gpuLinesize;   // GPU端Y/UV平面pitch(CUDA_NV12)
+    std::shared_ptr<void> hardwareFrameRef; // 持有底层硬件帧生命周期
     int width;                         // 视频宽度
     int height;                        // 视频高度
     uint64_t pts;                      // 显示时间戳
@@ -37,6 +42,9 @@ struct MediaFrame {
     MediaFrame() 
         : type(Type::VIDEO)
         , pixelFormat(PixelFormat::YUV420P)
+        , gpuData{0, 0}
+        , gpuLinesize{0, 0}
+        , hardwareFrameRef(nullptr)
         , width(0)
         , height(0)
         , pts(0)

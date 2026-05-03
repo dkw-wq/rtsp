@@ -16,6 +16,7 @@ extern "C" {
 #include <libavutil/error.h>
 #include <libavutil/hwcontext.h>
 #include <libavutil/opt.h>
+#include <libavutil/pixdesc.h>
 #include <libavutil/pixfmt.h>
 #include <libswscale/swscale.h>
 }
@@ -78,6 +79,8 @@ public:
         , hwPixelFormat_(AV_PIX_FMT_NONE)
         , hwDecodeActive_(false)
         , hwDecodeStatus_("off")
+        , hardwareFrameOutputEnabled_(false)
+        , cudaFrameLayoutLogged_(false)
         , openDeadline_(std::chrono::steady_clock::time_point::max())
     {}
 
@@ -289,6 +292,10 @@ public:
         hwDecodeBackend_ = toLower(backend);
     }
 
+    void setHardwareFrameOutput(bool enabled) {
+        hardwareFrameOutputEnabled_ = enabled;
+    }
+
     std::string getDecodeBackend() const {
         return hwDecodeActive_ ? hwDecodeBackend_ : "cpu";
     }
@@ -377,6 +384,63 @@ private:
 
         sws_scale(swsContext_, sourceFrame->data, sourceFrame->linesize, 0,
                   sourceFrame->height, dstData, dstLinesize);
+        return true;
+    }
+
+    bool fillCudaNv12Frame(const AVFrame* sourceFrame, MediaFrame& mediaFrame) const {
+        if (sourceFrame->format != AV_PIX_FMT_CUDA ||
+            sourceFrame->data[0] == nullptr ||
+            sourceFrame->data[1] == nullptr ||
+            sourceFrame->linesize[0] <= 0 ||
+            sourceFrame->linesize[1] <= 0) {
+            return false;
+        }
+
+        if (sourceFrame->hw_frames_ctx != nullptr) {
+            const auto* framesContext =
+                reinterpret_cast<const AVHWFramesContext*>(sourceFrame->hw_frames_ctx->data);
+            if (framesContext != nullptr && framesContext->sw_format != AV_PIX_FMT_NV12) {
+                SPDLOG_WARN("CUDA frame software format is {}, expected nv12; using CPU fallback",
+                            av_get_pix_fmt_name(framesContext->sw_format));
+                return false;
+            }
+        }
+
+        if (!cudaFrameLayoutLogged_) {
+            cudaFrameLayoutLogged_ = true;
+            SPDLOG_INFO("CUDA NV12 frame layout: size={}x{}, y_pitch={}, uv_pitch={}, y_ptr={}, uv_ptr={}",
+                        sourceFrame->width,
+                        sourceFrame->height,
+                        sourceFrame->linesize[0],
+                        sourceFrame->linesize[1],
+                        static_cast<const void*>(sourceFrame->data[0]),
+                        static_cast<const void*>(sourceFrame->data[1]));
+        }
+
+        AVFrame* retainedFrame = av_frame_alloc();
+        if (!retainedFrame) {
+            SPDLOG_WARN("Failed to allocate CUDA frame reference");
+            return false;
+        }
+
+        const int ret = av_frame_ref(retainedFrame, sourceFrame);
+        if (ret < 0) {
+            SPDLOG_WARN("Failed to retain CUDA frame: {}", ffmpegError(ret));
+            av_frame_free(&retainedFrame);
+            return false;
+        }
+
+        mediaFrame.pixelFormat = MediaFrame::PixelFormat::CUDA_NV12;
+        mediaFrame.gpuData[0] = reinterpret_cast<uintptr_t>(sourceFrame->data[0]);
+        mediaFrame.gpuData[1] = reinterpret_cast<uintptr_t>(sourceFrame->data[1]);
+        mediaFrame.gpuLinesize[0] = sourceFrame->linesize[0];
+        mediaFrame.gpuLinesize[1] = sourceFrame->linesize[1];
+        mediaFrame.hardwareFrameRef = std::shared_ptr<void>(
+            retainedFrame,
+            [](void* framePtr) {
+                AVFrame* frame = static_cast<AVFrame*>(framePtr);
+                av_frame_free(&frame);
+            });
         return true;
     }
 
@@ -585,7 +649,8 @@ private:
                         }
 
                         AVFrame* outputFrame = frame;
-                        if (hwDecodeActive_ && frame->format == hwPixelFormat_) {
+                        if (hwDecodeActive_ && frame->format == hwPixelFormat_ &&
+                            !(hardwareFrameOutputEnabled_ && frame->format == AV_PIX_FMT_CUDA)) {
                             av_frame_unref(softwareFrame);
                             ret = av_hwframe_transfer_data(softwareFrame, frame, 0);
                             if (ret < 0) {
@@ -608,7 +673,34 @@ private:
                         mediaFrame->dts = outputFrame->pkt_dts;
                         mediaFrame->keyFrame = (outputFrame->flags & AV_FRAME_FLAG_KEY) != 0;
 
-                        if (!copyFrameAsNv12(outputFrame, *mediaFrame)) {
+                        bool mediaFrameReady = false;
+                        if (hardwareFrameOutputEnabled_ &&
+                            hwDecodeActive_ &&
+                            frame->format == AV_PIX_FMT_CUDA &&
+                            fillCudaNv12Frame(frame, *mediaFrame)) {
+                            // Keep the frame in GPU memory; OpenGL will consume it through CUDA interop.
+                            mediaFrameReady = true;
+                        }
+
+                        if (!mediaFrameReady &&
+                            hwDecodeActive_ &&
+                            outputFrame == frame &&
+                            frame->format == hwPixelFormat_) {
+                            av_frame_unref(softwareFrame);
+                            ret = av_hwframe_transfer_data(softwareFrame, frame, 0);
+                            if (ret < 0) {
+                                SPDLOG_WARN("Failed to transfer hardware frame to CPU fallback: {}",
+                                            ffmpegError(ret));
+                                av_frame_unref(frame);
+                                continue;
+                            }
+                            softwareFrame->pts = frame->pts;
+                            softwareFrame->pkt_dts = frame->pkt_dts;
+                            softwareFrame->flags = frame->flags;
+                            outputFrame = softwareFrame;
+                        }
+
+                        if (!mediaFrameReady && !copyFrameAsNv12(outputFrame, *mediaFrame)) {
                             av_frame_unref(frame);
                             av_frame_unref(softwareFrame);
                             continue;
@@ -652,6 +744,8 @@ private:
     AVPixelFormat hwPixelFormat_;
     bool hwDecodeActive_;
     std::string hwDecodeStatus_;
+    bool hardwareFrameOutputEnabled_;
+    mutable bool cudaFrameLayoutLogged_;
     std::chrono::steady_clock::time_point openDeadline_;
 };
 
@@ -686,6 +780,10 @@ void RtspClient::setErrorCallback(ErrorCallback callback) {
 
 void RtspClient::setHardwareDecode(const std::string& backend) {
     pImpl_->setHardwareDecode(backend);
+}
+
+void RtspClient::setHardwareFrameOutput(bool enabled) {
+    pImpl_->setHardwareFrameOutput(enabled);
 }
 
 std::string RtspClient::getDecodeBackend() const {

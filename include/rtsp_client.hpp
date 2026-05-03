@@ -72,6 +72,11 @@ public:
     void setHardwareDecode(const std::string& backend);
 
     /**
+     * @brief 允许输出硬件帧给GPU渲染器
+     */
+    void setHardwareFrameOutput(bool enabled);
+
+    /**
      * @brief 获取当前实际解码后端
      * @return CPU, CUDA
      */

@@ -3,6 +3,7 @@
 #include <array>
 #include <algorithm>
 #include <cctype>
+#include <cstddef>
 #include <cstring>
 #include <iomanip>
 #include <sstream>
@@ -15,6 +16,11 @@ extern "C" {
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_opengl.h>
 }
+
+#ifdef RTSP_ENABLE_CUDA_INTEROP
+#include <cuda_gl_interop.h>
+#include <cuda_runtime.h>
+#endif
 
 #ifndef GL_VERTEX_SHADER
 #define GL_VERTEX_SHADER 0x8B31
@@ -43,6 +49,33 @@ extern "C" {
 #ifndef GL_CLAMP_TO_EDGE
 #define GL_CLAMP_TO_EDGE 0x812F
 #endif
+#ifndef GL_PIXEL_UNPACK_BUFFER
+#define GL_PIXEL_UNPACK_BUFFER 0x88EC
+#endif
+#ifndef GL_STREAM_DRAW
+#define GL_STREAM_DRAW 0x88E0
+#endif
+#ifndef GL_RED
+#define GL_RED 0x1903
+#endif
+#ifndef GL_RG
+#define GL_RG 0x8227
+#endif
+#ifndef GL_R8
+#define GL_R8 0x8229
+#endif
+#ifndef GL_RG8
+#define GL_RG8 0x822B
+#endif
+#ifndef GL_ARRAY_BUFFER
+#define GL_ARRAY_BUFFER 0x8892
+#endif
+#ifndef GL_STATIC_DRAW
+#define GL_STATIC_DRAW 0x88E4
+#endif
+#ifndef GL_DYNAMIC_DRAW
+#define GL_DYNAMIC_DRAW 0x88E8
+#endif
 
 namespace rtsp {
 
@@ -66,6 +99,23 @@ using GlGetUniformLocation = GLint(APIENTRY*)(GLuint, const GlChar*);
 using GlUniform1i = void(APIENTRY*)(GLint, GLint);
 using GlUniform1iv = void(APIENTRY*)(GLint, GLsizei, const GLint*);
 using GlActiveTexture = void(APIENTRY*)(GLenum);
+using GlGenBuffers = void(APIENTRY*)(GLsizei, GLuint*);
+using GlBindBuffer = void(APIENTRY*)(GLenum, GLuint);
+using GlBufferData = void(APIENTRY*)(GLenum, std::ptrdiff_t, const void*, GLenum);
+using GlDeleteBuffers = void(APIENTRY*)(GLsizei, const GLuint*);
+using GlGenVertexArrays = void(APIENTRY*)(GLsizei, GLuint*);
+using GlBindVertexArray = void(APIENTRY*)(GLuint);
+using GlDeleteVertexArrays = void(APIENTRY*)(GLsizei, const GLuint*);
+using GlEnableVertexAttribArray = void(APIENTRY*)(GLuint);
+using GlVertexAttribPointer = void(APIENTRY*)(GLuint, GLint, GLenum, GLboolean, GLsizei, const void*);
+using GlUniform2f = void(APIENTRY*)(GLint, GLfloat, GLfloat);
+using GlUniform4f = void(APIENTRY*)(GLint, GLfloat, GLfloat, GLfloat, GLfloat);
+
+#ifdef RTSP_ENABLE_CUDA_INTEROP
+const char* cudaErrorName(cudaError_t error) {
+    return cudaGetErrorString(error);
+}
+#endif
 
 template <typename T>
 bool loadGlFunction(T& target, const char* name) {
@@ -97,6 +147,17 @@ struct GlApi {
     GlUniform1i uniform1i = nullptr;
     GlUniform1iv uniform1iv = nullptr;
     GlActiveTexture activeTexture = nullptr;
+    GlGenBuffers genBuffers = nullptr;
+    GlBindBuffer bindBuffer = nullptr;
+    GlBufferData bufferData = nullptr;
+    GlDeleteBuffers deleteBuffers = nullptr;
+    GlGenVertexArrays genVertexArrays = nullptr;
+    GlBindVertexArray bindVertexArray = nullptr;
+    GlDeleteVertexArrays deleteVertexArrays = nullptr;
+    GlEnableVertexAttribArray enableVertexAttribArray = nullptr;
+    GlVertexAttribPointer vertexAttribPointer = nullptr;
+    GlUniform2f uniform2f = nullptr;
+    GlUniform4f uniform4f = nullptr;
 
     bool load() {
         return loadGlFunction(createShader, "glCreateShader") &&
@@ -115,27 +176,41 @@ struct GlApi {
                loadGlFunction(getUniformLocation, "glGetUniformLocation") &&
                loadGlFunction(uniform1i, "glUniform1i") &&
                loadGlFunction(uniform1iv, "glUniform1iv") &&
-               loadGlFunction(activeTexture, "glActiveTexture");
+               loadGlFunction(activeTexture, "glActiveTexture") &&
+               loadGlFunction(genBuffers, "glGenBuffers") &&
+               loadGlFunction(bindBuffer, "glBindBuffer") &&
+               loadGlFunction(bufferData, "glBufferData") &&
+               loadGlFunction(deleteBuffers, "glDeleteBuffers") &&
+               loadGlFunction(genVertexArrays, "glGenVertexArrays") &&
+               loadGlFunction(bindVertexArray, "glBindVertexArray") &&
+               loadGlFunction(deleteVertexArrays, "glDeleteVertexArrays") &&
+               loadGlFunction(enableVertexAttribArray, "glEnableVertexAttribArray") &&
+               loadGlFunction(vertexAttribPointer, "glVertexAttribPointer") &&
+               loadGlFunction(uniform2f, "glUniform2f") &&
+               loadGlFunction(uniform4f, "glUniform4f");
     }
 };
 
 constexpr const char* kVertexShader = R"(
-#version 120
-varying vec2 v_texCoord;
+#version 330 core
+layout(location = 0) in vec2 in_position;
+layout(location = 1) in vec2 in_texCoord;
+out vec2 v_texCoord;
 
 void main() {
-    gl_Position = gl_Vertex;
-    v_texCoord = gl_MultiTexCoord0.st;
+    gl_Position = vec4(in_position, 0.0, 1.0);
+    v_texCoord = in_texCoord;
 }
 )";
 
 constexpr const char* kFragmentShader = R"(
-#version 120
+#version 330 core
 uniform sampler2D tex_y;
 uniform sampler2D tex_uv;
 uniform int filter_count;
 uniform int filter_modes[4];
-varying vec2 v_texCoord;
+in vec2 v_texCoord;
+out vec4 fragColor;
 
 vec3 applyFilter(int mode, vec3 rgb) {
     if (mode == 1) {
@@ -160,8 +235,8 @@ vec3 applyFilter(int mode, vec3 rgb) {
 }
 
 void main() {
-    float y = texture2D(tex_y, v_texCoord).r;
-    vec2 uv = texture2D(tex_uv, v_texCoord).ra - vec2(0.5, 0.5);
+    float y = texture(tex_y, v_texCoord).r;
+    vec2 uv = texture(tex_uv, v_texCoord).rg - vec2(0.5, 0.5);
     float u = uv.x;
     float v = uv.y;
 
@@ -183,7 +258,29 @@ void main() {
         rgb = applyFilter(filter_modes[3], rgb);
     }
 
-    gl_FragColor = vec4(clamp(rgb, 0.0, 1.0), 1.0);
+    fragColor = vec4(clamp(rgb, 0.0, 1.0), 1.0);
+}
+)";
+
+constexpr const char* kSolidVertexShader = R"(
+#version 330 core
+layout(location = 0) in vec2 in_position;
+uniform vec2 screen_size;
+
+void main() {
+    vec2 zeroToOne = in_position / screen_size;
+    vec2 clip = zeroToOne * 2.0 - 1.0;
+    gl_Position = vec4(clip.x, -clip.y, 0.0, 1.0);
+}
+)";
+
+constexpr const char* kSolidFragmentShader = R"(
+#version 330 core
+uniform vec4 solid_color;
+out vec4 fragColor;
+
+void main() {
+    fragColor = solid_color;
 }
 )";
 
@@ -403,16 +500,27 @@ public:
     bool isInitialized() const override;
 
 private:
-    bool createProgram();
+    bool createPrograms();
+    bool createGeometry();
     GLuint compileShader(GLenum type, const char* source);
+    GLuint linkProgram(GLuint vertexShader, GLuint fragmentShader);
     bool createTextures();
     void setupTexture(GLuint texture) const;
     void uploadFilterPipeline();
     void applyVideoViewport() const;
     bool renderNv12(const uint8_t* y, const uint8_t* uv, int width, int height);
+    bool renderCudaNv12(const MediaFrame& frame);
+    bool finishFrameRender();
+#ifdef RTSP_ENABLE_CUDA_INTEROP
+    bool registerCudaInterop();
+    void unregisterCudaInterop();
+    bool uploadCudaFrameToTextures(const MediaFrame& frame);
+    bool downloadCudaFrameToNv12(const MediaFrame& frame, std::vector<uint8_t>& data) const;
+#endif
     void drawOverlay();
-    void drawText(float x, float y, const std::string& text, float scale) const;
-    void drawRect(float x, float y, float width, float height) const;
+    void drawText(float x, float y, const std::string& text, float scale);
+    void drawRect(float x, float y, float width, float height);
+    void flushOverlay(float red, float green, float blue, float alpha);
     std::array<std::string, 7> makeOverlayLines() const;
 
     SDL_Window* window_;
@@ -420,12 +528,25 @@ private:
     GlApi gl_;
 
     GLuint program_;
+    GLuint overlayProgram_;
+    GLuint videoVao_;
+    GLuint videoVbo_;
+    GLuint overlayVao_;
+    GLuint overlayVbo_;
     std::array<GLuint, 2> textures_;
+#ifdef RTSP_ENABLE_CUDA_INTEROP
+    std::array<GLuint, 2> pixelUnpackBuffers_;
+    std::array<cudaGraphicsResource_t, 2> cudaResources_;
+    bool cudaInteropRegistered_;
+#endif
     GLint yLocation_;
     GLint uvLocation_;
     GLint filterCountLocation_;
     GLint filterModesLocation_;
+    GLint overlayScreenSizeLocation_;
+    GLint overlayColorLocation_;
     ShaderFilterPipeline filterPipeline_;
+    std::vector<float> overlayVertices_;
     int previewFilterMode_;
     PlaybackStats playbackStats_;
 
@@ -443,12 +564,25 @@ OpenGlVideoRenderer::OpenGlVideoRenderer(const std::vector<std::string>& filterN
     : window_(nullptr)
     , glContext_(nullptr)
     , program_(0)
+    , overlayProgram_(0)
+    , videoVao_(0)
+    , videoVbo_(0)
+    , overlayVao_(0)
+    , overlayVbo_(0)
     , textures_{0, 0}
+#ifdef RTSP_ENABLE_CUDA_INTEROP
+    , pixelUnpackBuffers_{0, 0}
+    , cudaResources_{nullptr, nullptr}
+    , cudaInteropRegistered_(false)
+#endif
     , yLocation_(-1)
     , uvLocation_(-1)
     , filterCountLocation_(-1)
     , filterModesLocation_(-1)
+    , overlayScreenSizeLocation_(-1)
+    , overlayColorLocation_(-1)
     , filterPipeline_(ShaderFilterPipeline::fromNames(filterNames))
+    , overlayVertices_()
     , previewFilterMode_(0)
     , playbackStats_()
     , width_(0)
@@ -472,8 +606,9 @@ bool OpenGlVideoRenderer::initialize(int width, int height, const std::string& t
         return false;
     }
 
-    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 2);
-    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 1);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 3);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
     SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
 
     window_ = SDL_CreateWindow(
@@ -506,7 +641,7 @@ bool OpenGlVideoRenderer::initialize(int width, int height, const std::string& t
     SDL_GL_SetSwapInterval(1);
 
     apiLoaded_ = gl_.load();
-    if (!apiLoaded_ || !createProgram() || !createTextures()) {
+    if (!apiLoaded_ || !createPrograms() || !createGeometry() || !createTextures()) {
         close();
         return false;
     }
@@ -514,7 +649,7 @@ bool OpenGlVideoRenderer::initialize(int width, int height, const std::string& t
     glClearColor(0.0F, 0.0F, 0.0F, 1.0F);
 
     initialized_ = true;
-    SPDLOG_INFO("OpenGL renderer initialized: {}x{}", width, height);
+    SPDLOG_INFO("OpenGL 3.3 renderer initialized: {}x{}", width, height);
     return true;
 }
 
@@ -523,15 +658,19 @@ bool OpenGlVideoRenderer::render(const std::shared_ptr<MediaFrame>& frame) {
         return false;
     }
 
+    if (frame->pixelFormat == MediaFrame::PixelFormat::CUDA_NV12) {
+        return renderCudaNv12(*frame);
+    }
+
+    if (frame->pixelFormat != MediaFrame::PixelFormat::NV12) {
+        SPDLOG_ERROR("OpenGL renderer expected NV12 or CUDA_NV12 frame");
+        return false;
+    }
+
     const size_t ySize = static_cast<size_t>(frame->width) * static_cast<size_t>(frame->height);
     const size_t requiredSize = ySize * 3 / 2;
     if (frame->data.size() < requiredSize) {
         SPDLOG_ERROR("Frame data too small for NV12: {} < {}", frame->data.size(), requiredSize);
-        return false;
-    }
-
-    if (frame->pixelFormat != MediaFrame::PixelFormat::NV12) {
-        SPDLOG_ERROR("OpenGL renderer expected NV12 frame");
         return false;
     }
 
@@ -579,14 +718,45 @@ void OpenGlVideoRenderer::close() {
     if (glContext_) {
         SDL_GL_MakeCurrent(window_, glContext_);
 
+#ifdef RTSP_ENABLE_CUDA_INTEROP
+        unregisterCudaInterop();
+
+        if (pixelUnpackBuffers_[0] != 0) {
+            gl_.deleteBuffers(static_cast<GLsizei>(pixelUnpackBuffers_.size()),
+                              pixelUnpackBuffers_.data());
+            pixelUnpackBuffers_ = {0, 0};
+        }
+#endif
+
         if (textures_[0] != 0) {
             glDeleteTextures(static_cast<GLsizei>(textures_.size()), textures_.data());
             textures_ = {0, 0};
         }
 
+        if (videoVbo_ != 0) {
+            gl_.deleteBuffers(1, &videoVbo_);
+            videoVbo_ = 0;
+        }
+        if (overlayVbo_ != 0) {
+            gl_.deleteBuffers(1, &overlayVbo_);
+            overlayVbo_ = 0;
+        }
+        if (videoVao_ != 0) {
+            gl_.deleteVertexArrays(1, &videoVao_);
+            videoVao_ = 0;
+        }
+        if (overlayVao_ != 0) {
+            gl_.deleteVertexArrays(1, &overlayVao_);
+            overlayVao_ = 0;
+        }
+
         if (apiLoaded_ && program_ != 0) {
             gl_.deleteProgram(program_);
             program_ = 0;
+        }
+        if (apiLoaded_ && overlayProgram_ != 0) {
+            gl_.deleteProgram(overlayProgram_);
+            overlayProgram_ = 0;
         }
     }
 
@@ -606,6 +776,9 @@ void OpenGlVideoRenderer::close() {
     uvLocation_ = -1;
     filterCountLocation_ = -1;
     filterModesLocation_ = -1;
+    overlayScreenSizeLocation_ = -1;
+    overlayColorLocation_ = -1;
+    overlayVertices_.clear();
     width_ = 0;
     height_ = 0;
     initialized_ = false;
@@ -616,7 +789,7 @@ int OpenGlVideoRenderer::getWidth() const { return width_; }
 int OpenGlVideoRenderer::getHeight() const { return height_; }
 bool OpenGlVideoRenderer::isInitialized() const { return initialized_; }
 
-bool OpenGlVideoRenderer::createProgram() {
+bool OpenGlVideoRenderer::createPrograms() {
     const GLuint vertexShader = compileShader(GL_VERTEX_SHADER, kVertexShader);
     if (vertexShader == 0) {
         return false;
@@ -628,25 +801,8 @@ bool OpenGlVideoRenderer::createProgram() {
         return false;
     }
 
-    program_ = gl_.createProgram();
-    gl_.attachShader(program_, vertexShader);
-    gl_.attachShader(program_, fragmentShader);
-    gl_.linkProgram(program_);
-
-    GLint linked = GL_FALSE;
-    gl_.getProgramiv(program_, GL_LINK_STATUS, &linked);
-
-    gl_.deleteShader(vertexShader);
-    gl_.deleteShader(fragmentShader);
-
-    if (linked != GL_TRUE) {
-        GLint logLength = 0;
-        gl_.getProgramiv(program_, GL_INFO_LOG_LENGTH, &logLength);
-        std::string log(static_cast<size_t>(logLength), '\0');
-        gl_.getProgramInfoLog(program_, logLength, nullptr, log.data());
-        SPDLOG_ERROR("OpenGL shader program link failed: {}", log);
-        gl_.deleteProgram(program_);
-        program_ = 0;
+    program_ = linkProgram(vertexShader, fragmentShader);
+    if (program_ == 0) {
         return false;
     }
 
@@ -660,7 +816,52 @@ bool OpenGlVideoRenderer::createProgram() {
     uploadFilterPipeline();
     SPDLOG_INFO("OpenGL shader pipeline: {}", filterPipeline_.describe());
 
+    const GLuint solidVertexShader = compileShader(GL_VERTEX_SHADER, kSolidVertexShader);
+    if (solidVertexShader == 0) {
+        return false;
+    }
+
+    const GLuint solidFragmentShader = compileShader(GL_FRAGMENT_SHADER, kSolidFragmentShader);
+    if (solidFragmentShader == 0) {
+        gl_.deleteShader(solidVertexShader);
+        return false;
+    }
+
+    overlayProgram_ = linkProgram(solidVertexShader, solidFragmentShader);
+    if (overlayProgram_ == 0) {
+        return false;
+    }
+
+    gl_.useProgram(overlayProgram_);
+    overlayScreenSizeLocation_ = gl_.getUniformLocation(overlayProgram_, "screen_size");
+    overlayColorLocation_ = gl_.getUniformLocation(overlayProgram_, "solid_color");
+
     return true;
+}
+
+GLuint OpenGlVideoRenderer::linkProgram(GLuint vertexShader, GLuint fragmentShader) {
+    const GLuint linkedProgram = gl_.createProgram();
+    gl_.attachShader(linkedProgram, vertexShader);
+    gl_.attachShader(linkedProgram, fragmentShader);
+    gl_.linkProgram(linkedProgram);
+
+    GLint linked = GL_FALSE;
+    gl_.getProgramiv(linkedProgram, GL_LINK_STATUS, &linked);
+
+    gl_.deleteShader(vertexShader);
+    gl_.deleteShader(fragmentShader);
+
+    if (linked == GL_TRUE) {
+        return linkedProgram;
+    }
+
+    GLint logLength = 0;
+    gl_.getProgramiv(linkedProgram, GL_INFO_LOG_LENGTH, &logLength);
+    std::string log(static_cast<size_t>(logLength), '\0');
+    gl_.getProgramInfoLog(linkedProgram, logLength, nullptr, log.data());
+    SPDLOG_ERROR("OpenGL shader program link failed: {}", log);
+    gl_.deleteProgram(linkedProgram);
+    return 0;
 }
 
 void OpenGlVideoRenderer::uploadFilterPipeline() {
@@ -715,6 +916,56 @@ GLuint OpenGlVideoRenderer::compileShader(GLenum type, const char* source) {
     return 0;
 }
 
+bool OpenGlVideoRenderer::createGeometry() {
+    constexpr std::array<float, 16> videoVertices = {
+        -1.0F, -1.0F, 0.0F, 1.0F,
+         1.0F, -1.0F, 1.0F, 1.0F,
+        -1.0F,  1.0F, 0.0F, 0.0F,
+         1.0F,  1.0F, 1.0F, 0.0F
+    };
+
+    gl_.genVertexArrays(1, &videoVao_);
+    gl_.genBuffers(1, &videoVbo_);
+    if (videoVao_ == 0 || videoVbo_ == 0) {
+        SPDLOG_ERROR("Failed to create OpenGL video geometry");
+        return false;
+    }
+
+    gl_.bindVertexArray(videoVao_);
+    gl_.bindBuffer(GL_ARRAY_BUFFER, videoVbo_);
+    gl_.bufferData(GL_ARRAY_BUFFER,
+                   static_cast<std::ptrdiff_t>(videoVertices.size() * sizeof(float)),
+                   videoVertices.data(),
+                   GL_STATIC_DRAW);
+    gl_.enableVertexAttribArray(0);
+    gl_.vertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE,
+                            static_cast<GLsizei>(4 * sizeof(float)),
+                            nullptr);
+    gl_.enableVertexAttribArray(1);
+    gl_.vertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE,
+                            static_cast<GLsizei>(4 * sizeof(float)),
+                            reinterpret_cast<const void*>(2 * sizeof(float)));
+
+    gl_.genVertexArrays(1, &overlayVao_);
+    gl_.genBuffers(1, &overlayVbo_);
+    if (overlayVao_ == 0 || overlayVbo_ == 0) {
+        SPDLOG_ERROR("Failed to create OpenGL overlay geometry");
+        return false;
+    }
+
+    gl_.bindVertexArray(overlayVao_);
+    gl_.bindBuffer(GL_ARRAY_BUFFER, overlayVbo_);
+    gl_.bufferData(GL_ARRAY_BUFFER, 0, nullptr, GL_DYNAMIC_DRAW);
+    gl_.enableVertexAttribArray(0);
+    gl_.vertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE,
+                            static_cast<GLsizei>(2 * sizeof(float)),
+                            nullptr);
+
+    gl_.bindBuffer(GL_ARRAY_BUFFER, 0);
+    gl_.bindVertexArray(0);
+    return true;
+}
+
 bool OpenGlVideoRenderer::createTextures() {
     glGenTextures(static_cast<GLsizei>(textures_.size()), textures_.data());
     for (GLuint texture : textures_) {
@@ -728,12 +979,36 @@ bool OpenGlVideoRenderer::createTextures() {
     glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
 
     glBindTexture(GL_TEXTURE_2D, textures_[0]);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_LUMINANCE, width_, height_, 0,
-                 GL_LUMINANCE, GL_UNSIGNED_BYTE, nullptr);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_R8, width_, height_, 0,
+                 GL_RED, GL_UNSIGNED_BYTE, nullptr);
 
     glBindTexture(GL_TEXTURE_2D, textures_[1]);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_LUMINANCE_ALPHA, width_ / 2, height_ / 2, 0,
-                 GL_LUMINANCE_ALPHA, GL_UNSIGNED_BYTE, nullptr);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RG8, width_ / 2, height_ / 2, 0,
+                 GL_RG, GL_UNSIGNED_BYTE, nullptr);
+
+#ifdef RTSP_ENABLE_CUDA_INTEROP
+    gl_.genBuffers(static_cast<GLsizei>(pixelUnpackBuffers_.size()), pixelUnpackBuffers_.data());
+    for (GLuint buffer : pixelUnpackBuffers_) {
+        if (buffer == 0) {
+            SPDLOG_ERROR("Failed to create OpenGL pixel unpack buffer");
+            return false;
+        }
+    }
+
+    gl_.bindBuffer(GL_PIXEL_UNPACK_BUFFER, pixelUnpackBuffers_[0]);
+    gl_.bufferData(GL_PIXEL_UNPACK_BUFFER,
+                   static_cast<std::ptrdiff_t>(width_ * height_),
+                   nullptr,
+                   GL_STREAM_DRAW);
+
+    gl_.bindBuffer(GL_PIXEL_UNPACK_BUFFER, pixelUnpackBuffers_[1]);
+    gl_.bufferData(GL_PIXEL_UNPACK_BUFFER,
+                   static_cast<std::ptrdiff_t>(width_ * height_ / 2),
+                   nullptr,
+                   GL_STREAM_DRAW);
+
+    gl_.bindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
+#endif
 
     return true;
 }
@@ -761,36 +1036,259 @@ bool OpenGlVideoRenderer::renderNv12(const uint8_t* y, const uint8_t* uv,
     glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
 
     gl_.activeTexture(GL_TEXTURE0);
+    gl_.bindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
     glBindTexture(GL_TEXTURE_2D, textures_[0]);
     glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, width, height,
-                    GL_LUMINANCE, GL_UNSIGNED_BYTE, y);
+                    GL_RED, GL_UNSIGNED_BYTE, y);
 
     gl_.activeTexture(GL_TEXTURE1);
     glBindTexture(GL_TEXTURE_2D, textures_[1]);
     glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, width / 2, height / 2,
-                    GL_LUMINANCE_ALPHA, GL_UNSIGNED_BYTE, uv);
+                    GL_RG, GL_UNSIGNED_BYTE, uv);
 
+    return finishFrameRender();
+}
+
+bool OpenGlVideoRenderer::renderCudaNv12(const MediaFrame& frame) {
+    if (!initialized_) {
+        return false;
+    }
+
+    if (frame.width != width_ || frame.height != height_) {
+        SPDLOG_ERROR("CUDA frame size {}x{} does not match texture size {}x{}",
+                     frame.width, frame.height, width_, height_);
+        return false;
+    }
+
+    if (frame.gpuData[0] == 0 || frame.gpuData[1] == 0 ||
+        frame.gpuLinesize[0] <= 0 || frame.gpuLinesize[1] <= 0) {
+        SPDLOG_ERROR("CUDA NV12 frame is missing GPU plane data");
+        return false;
+    }
+
+#ifdef RTSP_ENABLE_CUDA_INTEROP
+    if (uploadCudaFrameToTextures(frame)) {
+        return finishFrameRender();
+    }
+
+    SPDLOG_WARN("CUDA/OpenGL interop upload failed; falling back to CUDA-to-CPU NV12 copy");
+    std::vector<uint8_t> cpuData;
+    if (!downloadCudaFrameToNv12(frame, cpuData)) {
+        return false;
+    }
+
+    const size_t ySize = static_cast<size_t>(frame.width) * static_cast<size_t>(frame.height);
+    return renderNv12(cpuData.data(), cpuData.data() + ySize, frame.width, frame.height);
+#else
+    SPDLOG_ERROR("CUDA/OpenGL interop is not compiled in");
+    return false;
+#endif
+}
+
+bool OpenGlVideoRenderer::finishFrameRender() {
     gl_.activeTexture(GL_TEXTURE0);
     gl_.useProgram(program_);
     glClear(GL_COLOR_BUFFER_BIT);
     applyVideoViewport();
 
-    glBegin(GL_TRIANGLE_STRIP);
-    glTexCoord2f(0.0F, 1.0F);
-    glVertex2f(-1.0F, -1.0F);
-    glTexCoord2f(1.0F, 1.0F);
-    glVertex2f(1.0F, -1.0F);
-    glTexCoord2f(0.0F, 0.0F);
-    glVertex2f(-1.0F, 1.0F);
-    glTexCoord2f(1.0F, 0.0F);
-    glVertex2f(1.0F, 1.0F);
-    glEnd();
+    gl_.activeTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, textures_[0]);
+    gl_.activeTexture(GL_TEXTURE1);
+    glBindTexture(GL_TEXTURE_2D, textures_[1]);
+    gl_.bindVertexArray(videoVao_);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    gl_.bindVertexArray(0);
 
     drawOverlay();
 
     SDL_GL_SwapWindow(window_);
     return true;
 }
+
+#ifdef RTSP_ENABLE_CUDA_INTEROP
+bool OpenGlVideoRenderer::registerCudaInterop() {
+    if (cudaInteropRegistered_) {
+        return true;
+    }
+
+    if (pixelUnpackBuffers_[0] == 0 || pixelUnpackBuffers_[1] == 0) {
+        return false;
+    }
+
+    cudaError_t error =
+        cudaGraphicsGLRegisterBuffer(&cudaResources_[0],
+                                     pixelUnpackBuffers_[0],
+                                     cudaGraphicsRegisterFlagsWriteDiscard);
+    if (error != cudaSuccess) {
+        SPDLOG_WARN("Failed to register OpenGL Y pixel unpack buffer with CUDA: {}",
+                    cudaErrorName(error));
+        cudaResources_[0] = nullptr;
+        return false;
+    }
+
+    error = cudaGraphicsGLRegisterBuffer(&cudaResources_[1],
+                                         pixelUnpackBuffers_[1],
+                                         cudaGraphicsRegisterFlagsWriteDiscard);
+    if (error != cudaSuccess) {
+        SPDLOG_WARN("Failed to register OpenGL UV pixel unpack buffer with CUDA: {}",
+                    cudaErrorName(error));
+        cudaGraphicsUnregisterResource(cudaResources_[0]);
+        cudaResources_[0] = nullptr;
+        cudaResources_[1] = nullptr;
+        return false;
+    }
+
+    cudaInteropRegistered_ = true;
+    SPDLOG_INFO("CUDA/OpenGL interop enabled through NV12 pixel unpack buffers");
+    return true;
+}
+
+void OpenGlVideoRenderer::unregisterCudaInterop() {
+    for (auto& resource : cudaResources_) {
+        if (resource != nullptr) {
+            const cudaError_t error = cudaGraphicsUnregisterResource(resource);
+            if (error != cudaSuccess) {
+                SPDLOG_WARN("Failed to unregister CUDA/OpenGL resource: {}", cudaErrorName(error));
+            }
+            resource = nullptr;
+        }
+    }
+
+    cudaInteropRegistered_ = false;
+}
+
+bool OpenGlVideoRenderer::uploadCudaFrameToTextures(const MediaFrame& frame) {
+    if (!registerCudaInterop()) {
+        return false;
+    }
+
+    cudaGraphicsResource_t resources[] = {cudaResources_[0], cudaResources_[1]};
+    cudaError_t error = cudaGraphicsMapResources(2, resources, 0);
+    if (error != cudaSuccess) {
+        SPDLOG_WARN("Failed to map CUDA/OpenGL resources: {}", cudaErrorName(error));
+        return false;
+    }
+
+    bool ok = true;
+    void* yBuffer = nullptr;
+    void* uvBuffer = nullptr;
+    size_t yBufferSize = 0;
+    size_t uvBufferSize = 0;
+
+    error = cudaGraphicsResourceGetMappedPointer(&yBuffer, &yBufferSize, cudaResources_[0]);
+    if (error != cudaSuccess) {
+        SPDLOG_WARN("Failed to access mapped CUDA Y pixel unpack buffer: {}", cudaErrorName(error));
+        ok = false;
+    }
+
+    if (ok) {
+        error = cudaGraphicsResourceGetMappedPointer(&uvBuffer, &uvBufferSize, cudaResources_[1]);
+        if (error != cudaSuccess) {
+            SPDLOG_WARN("Failed to access mapped CUDA UV pixel unpack buffer: {}", cudaErrorName(error));
+            ok = false;
+        }
+    }
+
+    if (ok) {
+        const size_t requiredYSize = static_cast<size_t>(frame.width) * static_cast<size_t>(frame.height);
+        const size_t requiredUvSize = requiredYSize / 2;
+        if (yBufferSize < requiredYSize || uvBufferSize < requiredUvSize) {
+            SPDLOG_WARN("CUDA/OpenGL PBO is too small: y={} uv={}, required y={} uv={}",
+                        yBufferSize, uvBufferSize, requiredYSize, requiredUvSize);
+            ok = false;
+        }
+    }
+
+    if (ok) {
+        error = cudaMemcpy2D(yBuffer,
+                             static_cast<size_t>(frame.width),
+                             reinterpret_cast<const void*>(frame.gpuData[0]),
+                             static_cast<size_t>(frame.gpuLinesize[0]),
+                             static_cast<size_t>(frame.width),
+                             static_cast<size_t>(frame.height),
+                             cudaMemcpyDeviceToDevice);
+        if (error != cudaSuccess) {
+            SPDLOG_WARN("Failed to copy CUDA Y plane to OpenGL pixel unpack buffer: {}",
+                        cudaErrorName(error));
+            ok = false;
+        }
+    }
+
+    if (ok) {
+        error = cudaMemcpy2D(uvBuffer,
+                             static_cast<size_t>(frame.width),
+                             reinterpret_cast<const void*>(frame.gpuData[1]),
+                             static_cast<size_t>(frame.gpuLinesize[1]),
+                             static_cast<size_t>(frame.width),
+                             static_cast<size_t>(frame.height / 2),
+                             cudaMemcpyDeviceToDevice);
+        if (error != cudaSuccess) {
+            SPDLOG_WARN("Failed to copy CUDA UV plane to OpenGL pixel unpack buffer: {}",
+                        cudaErrorName(error));
+            ok = false;
+        }
+    }
+
+    error = cudaGraphicsUnmapResources(2, resources, 0);
+    if (error != cudaSuccess) {
+        SPDLOG_WARN("Failed to unmap CUDA/OpenGL resources: {}", cudaErrorName(error));
+        ok = false;
+    }
+
+    if (!ok) {
+        return false;
+    }
+
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+
+    gl_.activeTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, textures_[0]);
+    gl_.bindBuffer(GL_PIXEL_UNPACK_BUFFER, pixelUnpackBuffers_[0]);
+    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, frame.width, frame.height,
+                    GL_RED, GL_UNSIGNED_BYTE, nullptr);
+
+    gl_.activeTexture(GL_TEXTURE1);
+    glBindTexture(GL_TEXTURE_2D, textures_[1]);
+    gl_.bindBuffer(GL_PIXEL_UNPACK_BUFFER, pixelUnpackBuffers_[1]);
+    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, frame.width / 2, frame.height / 2,
+                    GL_RG, GL_UNSIGNED_BYTE, nullptr);
+
+    gl_.bindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
+    return ok;
+}
+
+bool OpenGlVideoRenderer::downloadCudaFrameToNv12(const MediaFrame& frame,
+                                                 std::vector<uint8_t>& data) const {
+    const size_t ySize = static_cast<size_t>(frame.width) * static_cast<size_t>(frame.height);
+    data.resize(ySize * 3 / 2);
+
+    cudaError_t error = cudaMemcpy2D(data.data(),
+                                     static_cast<size_t>(frame.width),
+                                     reinterpret_cast<const void*>(frame.gpuData[0]),
+                                     static_cast<size_t>(frame.gpuLinesize[0]),
+                                     static_cast<size_t>(frame.width),
+                                     static_cast<size_t>(frame.height),
+                                     cudaMemcpyDeviceToHost);
+    if (error != cudaSuccess) {
+        SPDLOG_WARN("Failed to copy CUDA Y plane to CPU fallback buffer: {}", cudaErrorName(error));
+        return false;
+    }
+
+    error = cudaMemcpy2D(data.data() + ySize,
+                         static_cast<size_t>(frame.width),
+                         reinterpret_cast<const void*>(frame.gpuData[1]),
+                         static_cast<size_t>(frame.gpuLinesize[1]),
+                         static_cast<size_t>(frame.width),
+                         static_cast<size_t>(frame.height / 2),
+                         cudaMemcpyDeviceToHost);
+    if (error != cudaSuccess) {
+        SPDLOG_WARN("Failed to copy CUDA UV plane to CPU fallback buffer: {}", cudaErrorName(error));
+        return false;
+    }
+
+    return true;
+}
+#endif
 
 std::array<std::string, 7> OpenGlVideoRenderer::makeOverlayLines() const {
     std::ostringstream fps;
@@ -832,40 +1330,32 @@ void OpenGlVideoRenderer::drawOverlay() {
     const float height = 12.0F + lineHeight * static_cast<float>(lines.size());
 
     glViewport(0, 0, drawableWidth, drawableHeight);
-    gl_.useProgram(0);
-    glMatrixMode(GL_PROJECTION);
-    glPushMatrix();
-    glLoadIdentity();
-    glOrtho(0.0, static_cast<double>(drawableWidth), static_cast<double>(drawableHeight), 0.0, -1.0, 1.0);
-
-    glMatrixMode(GL_MODELVIEW);
-    glPushMatrix();
-    glLoadIdentity();
-
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-    glDisable(GL_TEXTURE_2D);
 
-    glColor4f(0.0F, 0.0F, 0.0F, 0.62F);
+    gl_.useProgram(overlayProgram_);
+    if (overlayScreenSizeLocation_ >= 0) {
+        gl_.uniform2f(overlayScreenSizeLocation_,
+                      static_cast<GLfloat>(drawableWidth),
+                      static_cast<GLfloat>(drawableHeight));
+    }
+
+    overlayVertices_.clear();
     drawRect(left - 6.0F, top - 6.0F, width, height);
+    flushOverlay(0.0F, 0.0F, 0.0F, 0.62F);
 
-    glColor4f(0.72F, 1.0F, 0.86F, 1.0F);
+    overlayVertices_.clear();
     float y = top;
     for (const std::string& line : lines) {
         drawText(left, y, line, scale);
         y += lineHeight;
     }
+    flushOverlay(0.72F, 1.0F, 0.86F, 1.0F);
 
-    glEnable(GL_TEXTURE_2D);
     glDisable(GL_BLEND);
-
-    glPopMatrix();
-    glMatrixMode(GL_PROJECTION);
-    glPopMatrix();
-    glMatrixMode(GL_MODELVIEW);
 }
 
-void OpenGlVideoRenderer::drawText(float x, float y, const std::string& text, float scale) const {
+void OpenGlVideoRenderer::drawText(float x, float y, const std::string& text, float scale) {
     float cursorX = x;
     for (char rawCh : text) {
         const char ch = static_cast<char>(std::toupper(static_cast<unsigned char>(rawCh)));
@@ -893,13 +1383,38 @@ void OpenGlVideoRenderer::drawText(float x, float y, const std::string& text, fl
     }
 }
 
-void OpenGlVideoRenderer::drawRect(float x, float y, float width, float height) const {
-    glBegin(GL_QUADS);
-    glVertex2f(x, y);
-    glVertex2f(x + width, y);
-    glVertex2f(x + width, y + height);
-    glVertex2f(x, y + height);
-    glEnd();
+void OpenGlVideoRenderer::drawRect(float x, float y, float width, float height) {
+    const float right = x + width;
+    const float bottom = y + height;
+    const std::array<float, 12> vertices = {
+        x, y,
+        right, y,
+        right, bottom,
+        x, y,
+        right, bottom,
+        x, bottom
+    };
+    overlayVertices_.insert(overlayVertices_.end(), vertices.begin(), vertices.end());
+}
+
+void OpenGlVideoRenderer::flushOverlay(float red, float green, float blue, float alpha) {
+    if (overlayVertices_.empty()) {
+        return;
+    }
+
+    if (overlayColorLocation_ >= 0) {
+        gl_.uniform4f(overlayColorLocation_, red, green, blue, alpha);
+    }
+
+    gl_.bindVertexArray(overlayVao_);
+    gl_.bindBuffer(GL_ARRAY_BUFFER, overlayVbo_);
+    gl_.bufferData(GL_ARRAY_BUFFER,
+                   static_cast<std::ptrdiff_t>(overlayVertices_.size() * sizeof(float)),
+                   overlayVertices_.data(),
+                   GL_DYNAMIC_DRAW);
+    glDrawArrays(GL_TRIANGLES, 0, static_cast<GLsizei>(overlayVertices_.size() / 2));
+    gl_.bindBuffer(GL_ARRAY_BUFFER, 0);
+    gl_.bindVertexArray(0);
 }
 
 } // namespace

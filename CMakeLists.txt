@@ -23,6 +23,24 @@ find_package(SDL2 CONFIG REQUIRED)
 # OpenGL
 find_package(OpenGL REQUIRED)
 
+# CUDA/OpenGL interop is optional. When the CUDA Toolkit is present, the
+# OpenGL renderer can upload CUDA decoded frames into GL textures without a
+# CPU round-trip.
+if(NOT DEFINED CUDAToolkit_ROOT)
+    file(GLOB CUDA_TOOLKIT_CANDIDATES
+        "C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v*")
+    if(CUDA_TOOLKIT_CANDIDATES)
+        list(SORT CUDA_TOOLKIT_CANDIDATES ORDER DESCENDING)
+        list(GET CUDA_TOOLKIT_CANDIDATES 0 CUDAToolkit_ROOT)
+    endif()
+endif()
+find_package(CUDAToolkit QUIET)
+if(CUDAToolkit_FOUND)
+    message(STATUS "CUDA Toolkit found: ${CUDAToolkit_VERSION}")
+else()
+    message(STATUS "CUDA Toolkit not found; CUDA/OpenGL interop disabled")
+endif()
+
 # yaml-cpp
 find_package(yaml-cpp REQUIRED)
 
@@ -68,6 +86,10 @@ add_executable(rtsp_player ${SOURCES} ${HEADERS})
 target_compile_definitions(rtsp_player PRIVATE SDL_MAIN_HANDLED)
 target_link_directories(rtsp_player PRIVATE ${FFMPEG_LIBRARY_DIRS})
 
+if(CUDAToolkit_FOUND)
+    target_compile_definitions(rtsp_player PRIVATE RTSP_ENABLE_CUDA_INTEROP=1)
+endif()
+
 # Link libraries
 target_link_libraries(rtsp_player
     Threads::Threads
@@ -77,6 +99,10 @@ target_link_libraries(rtsp_player
     yaml-cpp::yaml-cpp
     spdlog::spdlog
 )
+
+if(CUDAToolkit_FOUND)
+    target_link_libraries(rtsp_player CUDA::cudart)
+endif()
 
 # Install target
 install(TARGETS rtsp_player DESTINATION bin)
