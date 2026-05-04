@@ -15,6 +15,17 @@ namespace rtsp {
 struct RtpPacket;
 struct MediaFrame;
 
+struct RtspConnectionOptions {
+    std::string transport = "tcp";
+    int timeoutMs = 5000;
+    int bufferSize = 1024000;
+    bool lowLatency = false;
+    int maxDelayMs = 500;
+    int analyzeDurationMs = 0;
+    int probeSizeBytes = 32768;
+    int reorderQueueSize = 0;
+};
+
 /**
  * @brief RTSP客户端类
  * @note 使用FFmpeg处理RTSP连接和RTP接收
@@ -64,6 +75,11 @@ public:
      * @brief 设置错误回调
      */
     void setErrorCallback(ErrorCallback callback);
+
+    /**
+     * @brief 设置RTSP连接参数
+     */
+    void setConnectionOptions(const RtspConnectionOptions& options);
 
     /**
      * @brief 设置硬件解码后端

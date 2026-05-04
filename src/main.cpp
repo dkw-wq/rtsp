@@ -75,6 +75,39 @@ std::string describeFilters(const std::vector<std::string>& filters) {
     return result;
 }
 
+void assignPositiveInt(const YAML::Node& node, const char* key, int& target) {
+    if (!node[key]) {
+        return;
+    }
+
+    const int value = node[key].as<int>();
+    if (value > 0) {
+        target = value;
+    }
+}
+
+void assignNonNegativeInt(const YAML::Node& node, const char* key, int& target) {
+    if (!node[key]) {
+        return;
+    }
+
+    const int value = node[key].as<int>();
+    if (value >= 0) {
+        target = value;
+    }
+}
+
+std::string describeLowLatency(const rtsp::RtspConnectionOptions& options) {
+    if (!options.lowLatency) {
+        return "disabled";
+    }
+
+    return "enabled, max_delay_ms=" + std::to_string(options.maxDelayMs) +
+           ", analyze_duration_ms=" + std::to_string(options.analyzeDurationMs) +
+           ", probe_size_bytes=" + std::to_string(options.probeSizeBytes) +
+           ", reorder_queue_size=" + std::to_string(options.reorderQueueSize);
+}
+
 } // namespace
 
 // 全局变量用于控制主循环
@@ -92,6 +125,7 @@ int main(int argc, char* argv[]) {
     std::string rendererName = "sdl";
     std::string hwDecodeBackend = "none";
     std::vector<std::string> openglFilterNames = {"none"};
+    rtsp::RtspConnectionOptions rtspOptions;
     size_t jitterMaxSize = 30;
     uint32_t jitterLatencyMs = 100;
     bool reconnectEnabled = true;
@@ -119,6 +153,29 @@ int main(int argc, char* argv[]) {
         }
         if (config["hw_decode"]) {
             hwDecodeBackend = config["hw_decode"].as<std::string>();
+        }
+        if (config["rtsp"]) {
+            const auto rtspConfig = config["rtsp"];
+            if (rtspConfig["transport"]) {
+                rtspOptions.transport = rtspConfig["transport"].as<std::string>();
+            }
+            assignPositiveInt(rtspConfig, "timeout_ms", rtspOptions.timeoutMs);
+            assignNonNegativeInt(rtspConfig, "buffer_size", rtspOptions.bufferSize);
+
+            if (rtspConfig["low_latency"]) {
+                const auto lowLatencyConfig = rtspConfig["low_latency"];
+                if (lowLatencyConfig.IsScalar()) {
+                    rtspOptions.lowLatency = lowLatencyConfig.as<bool>();
+                } else {
+                    if (lowLatencyConfig["enabled"]) {
+                        rtspOptions.lowLatency = lowLatencyConfig["enabled"].as<bool>();
+                    }
+                    assignNonNegativeInt(lowLatencyConfig, "max_delay_ms", rtspOptions.maxDelayMs);
+                    assignNonNegativeInt(lowLatencyConfig, "analyze_duration_ms", rtspOptions.analyzeDurationMs);
+                    assignNonNegativeInt(lowLatencyConfig, "probe_size_bytes", rtspOptions.probeSizeBytes);
+                    assignNonNegativeInt(lowLatencyConfig, "reorder_queue_size", rtspOptions.reorderQueueSize);
+                }
+            }
         }
         if (config["opengl_filters"] && config["opengl_filters"].IsSequence()) {
             openglFilterNames.clear();
@@ -184,6 +241,9 @@ int main(int argc, char* argv[]) {
     SPDLOG_INFO("RTSP URL: {}", rtspUrl);
     SPDLOG_INFO("Renderer backend: {}", rendererName);
     SPDLOG_INFO("Hardware decode: {}", hwDecodeBackend);
+    SPDLOG_INFO("RTSP options: transport={}, timeout_ms={}, buffer_size={}, low_latency={}",
+                rtspOptions.transport, rtspOptions.timeoutMs, rtspOptions.bufferSize,
+                describeLowLatency(rtspOptions));
     SPDLOG_INFO("OpenGL shader pipeline: {}", describeFilters(openglFilterNames));
     SPDLOG_INFO("Jitter buffer: max_size={}, latency_ms={}", jitterMaxSize, jitterLatencyMs);
     SPDLOG_INFO("Reconnect: enabled={}, initial_delay_ms={}, max_delay_ms={}",
@@ -191,6 +251,7 @@ int main(int argc, char* argv[]) {
 
     // 创建组件
     auto rtspClient = std::make_unique<rtsp::RtspClient>();
+    rtspClient->setConnectionOptions(rtspOptions);
     rtspClient->setHardwareDecode(hwDecodeBackend);
     auto jitterBuffer = std::make_unique<rtsp::JitterBuffer>(jitterMaxSize, jitterLatencyMs);
     std::unique_ptr<rtsp::VideoRenderer> renderer;

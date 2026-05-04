@@ -7,6 +7,22 @@ rtsp_url: "rtsp://127.0.0.1:8554/webcam"
 width: 1920
 height: 1080
 
+# RTSP连接参数
+rtsp:
+  # 传输方式: tcp, udp
+  transport: "tcp"
+  # 连接和读写超时(毫秒)
+  timeout_ms: 5000
+  # FFmpeg输入缓冲区大小(字节)
+  buffer_size: 1024000
+  # 低延迟模式会启用 nobuffer/low_delay，并缩短探测和重排序等待
+  low_latency:
+    enabled: false
+    max_delay_ms: 500
+    analyze_duration_ms: 0
+    probe_size_bytes: 32768
+    reorder_queue_size: 0
+
 # Jitter Buffer设置
 jitter_buffer:
   max_size: 30      # 最大缓冲帧数

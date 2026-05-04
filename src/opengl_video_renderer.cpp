@@ -1,3 +1,4 @@
+#include "frame_capture.hpp"
 #include "video_renderer.hpp"
 
 #include <array>
@@ -11,6 +12,16 @@
 #include <vector>
 
 #include <spdlog/spdlog.h>
+
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
 
 extern "C" {
 #include <SDL2/SDL.h>
@@ -75,6 +86,9 @@ extern "C" {
 #endif
 #ifndef GL_DYNAMIC_DRAW
 #define GL_DYNAMIC_DRAW 0x88E8
+#endif
+#ifndef GL_RGB
+#define GL_RGB 0x1907
 #endif
 
 namespace rtsp {
@@ -339,6 +353,23 @@ const char* filterName(ShaderFilter filterMode) {
     }
 }
 
+bool isKeyDown(SDL_Scancode scancode, int windowsVirtualKey) {
+    const uint8_t* keys = SDL_GetKeyboardState(nullptr);
+    bool down = keys != nullptr && keys[scancode] != 0;
+#ifdef _WIN32
+    down = down || ((GetAsyncKeyState(windowsVirtualKey) & 0x8000) != 0);
+#else
+    (void)windowsVirtualKey;
+#endif
+    return down;
+}
+
+bool keyJustPressed(bool currentDown, bool& previousDown) {
+    const bool pressed = currentDown && !previousDown;
+    previousDown = currentDown;
+    return pressed;
+}
+
 struct ShaderFilterPipeline {
     std::array<ShaderFilter, kMaxFilterStages> filters{};
     size_t count = 0;
@@ -511,6 +542,11 @@ private:
     bool renderNv12(const uint8_t* y, const uint8_t* uv, int width, int height);
     bool renderCudaNv12(const MediaFrame& frame);
     bool finishFrameRender();
+    bool handleKeyboardShortcuts();
+    bool readBackBufferRgb(RgbFrame& frame) const;
+    void handleCaptureAfterRender();
+    void saveScreenshot(const RgbFrame& frame);
+    void toggleRecording();
 #ifdef RTSP_ENABLE_CUDA_INTEROP
     bool registerCudaInterop();
     void unregisterCudaInterop();
@@ -521,7 +557,7 @@ private:
     void drawText(float x, float y, const std::string& text, float scale);
     void drawRect(float x, float y, float width, float height);
     void flushOverlay(float red, float green, float blue, float alpha);
-    std::array<std::string, 7> makeOverlayLines() const;
+    std::array<std::string, 9> makeOverlayLines() const;
 
     SDL_Window* window_;
     SDL_GLContext glContext_;
@@ -549,6 +585,12 @@ private:
     std::vector<float> overlayVertices_;
     int previewFilterMode_;
     PlaybackStats playbackStats_;
+    RgbVideoRecorder recorder_;
+    bool screenshotRequested_;
+    int recordingFps_;
+    bool fKeyDown_;
+    bool sKeyDown_;
+    bool rKeyDown_;
 
     int width_;
     int height_;
@@ -585,6 +627,12 @@ OpenGlVideoRenderer::OpenGlVideoRenderer(const std::vector<std::string>& filterN
     , overlayVertices_()
     , previewFilterMode_(0)
     , playbackStats_()
+    , recorder_()
+    , screenshotRequested_(false)
+    , recordingFps_(30)
+    , fKeyDown_(false)
+    , sKeyDown_(false)
+    , rKeyDown_(false)
     , width_(0)
     , height_(0)
     , initialized_(false)
@@ -686,6 +734,7 @@ void OpenGlVideoRenderer::setPlaybackStats(const PlaybackStats& stats) {
 }
 
 bool OpenGlVideoRenderer::handleEvents() {
+    SDL_PumpEvents();
     SDL_Event event;
 
     while (SDL_PollEvent(&event)) {
@@ -693,15 +742,11 @@ bool OpenGlVideoRenderer::handleEvents() {
             case SDL_QUIT:
                 return false;
             case SDL_KEYDOWN:
-                if (event.key.keysym.sym == SDLK_ESCAPE ||
+                if (event.key.keysym.scancode == SDL_SCANCODE_ESCAPE ||
+                    event.key.keysym.scancode == SDL_SCANCODE_Q ||
+                    event.key.keysym.sym == SDLK_ESCAPE ||
                     event.key.keysym.sym == SDLK_q) {
                     return false;
-                }
-                if (event.key.keysym.sym == SDLK_f) {
-                    previewFilterMode_ = (previewFilterMode_ + 1) % 6;
-                    filterPipeline_.setPreviewFilter(static_cast<ShaderFilter>(previewFilterMode_));
-                    uploadFilterPipeline();
-                    SPDLOG_INFO("OpenGL shader pipeline: {}", filterPipeline_.describe());
                 }
                 break;
             case SDL_WINDOWEVENT:
@@ -711,10 +756,40 @@ bool OpenGlVideoRenderer::handleEvents() {
         }
     }
 
+    return handleKeyboardShortcuts();
+}
+
+bool OpenGlVideoRenderer::handleKeyboardShortcuts() {
+    SDL_PumpEvents();
+
+    if (isKeyDown(SDL_SCANCODE_ESCAPE, VK_ESCAPE) ||
+        isKeyDown(SDL_SCANCODE_Q, 'Q')) {
+        return false;
+    }
+
+    if (keyJustPressed(isKeyDown(SDL_SCANCODE_F, 'F'), fKeyDown_)) {
+        previewFilterMode_ = (previewFilterMode_ + 1) % 6;
+        filterPipeline_.setPreviewFilter(static_cast<ShaderFilter>(previewFilterMode_));
+        uploadFilterPipeline();
+        SPDLOG_INFO("OpenGL shader pipeline: {}", filterPipeline_.describe());
+    }
+
+    if (keyJustPressed(isKeyDown(SDL_SCANCODE_S, 'S'), sKeyDown_)) {
+        screenshotRequested_ = true;
+        SPDLOG_INFO("Screenshot requested");
+    }
+
+    if (keyJustPressed(isKeyDown(SDL_SCANCODE_R, 'R'), rKeyDown_)) {
+        toggleRecording();
+    }
+
     return true;
 }
 
 void OpenGlVideoRenderer::close() {
+    recorder_.stop();
+    screenshotRequested_ = false;
+
     if (glContext_) {
         SDL_GL_MakeCurrent(window_, glContext_);
 
@@ -1099,10 +1174,102 @@ bool OpenGlVideoRenderer::finishFrameRender() {
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
     gl_.bindVertexArray(0);
 
+    handleCaptureAfterRender();
     drawOverlay();
 
     SDL_GL_SwapWindow(window_);
     return true;
+}
+
+bool OpenGlVideoRenderer::readBackBufferRgb(RgbFrame& frame) const {
+    if (!window_) {
+        return false;
+    }
+
+    int drawableWidth = 0;
+    int drawableHeight = 0;
+    SDL_GL_GetDrawableSize(window_, &drawableWidth, &drawableHeight);
+    if (drawableWidth <= 0 || drawableHeight <= 0) {
+        return false;
+    }
+
+    const size_t rowSize = static_cast<size_t>(drawableWidth) * 3U;
+    std::vector<uint8_t> bottomUp(rowSize * static_cast<size_t>(drawableHeight));
+
+    glPixelStorei(GL_PACK_ALIGNMENT, 1);
+    glReadBuffer(GL_BACK);
+    glReadPixels(0, 0, drawableWidth, drawableHeight, GL_RGB, GL_UNSIGNED_BYTE,
+                 bottomUp.data());
+
+    frame.width = drawableWidth;
+    frame.height = drawableHeight;
+    frame.pixels.resize(bottomUp.size());
+
+    for (int y = 0; y < drawableHeight; ++y) {
+        const uint8_t* source =
+            bottomUp.data() + static_cast<size_t>(drawableHeight - 1 - y) * rowSize;
+        uint8_t* destination = frame.pixels.data() + static_cast<size_t>(y) * rowSize;
+        std::memcpy(destination, source, rowSize);
+    }
+
+    return true;
+}
+
+void OpenGlVideoRenderer::handleCaptureAfterRender() {
+    if (!screenshotRequested_ && !recorder_.isRecording()) {
+        return;
+    }
+
+    RgbFrame frame;
+    if (!readBackBufferRgb(frame)) {
+        SPDLOG_WARN("Failed to capture OpenGL frame");
+        screenshotRequested_ = false;
+        return;
+    }
+
+    if (screenshotRequested_) {
+        saveScreenshot(frame);
+        screenshotRequested_ = false;
+    }
+
+    if (recorder_.isRecording() && !recorder_.recordFrame(frame)) {
+        SPDLOG_WARN("Stopping recording after frame write failure");
+        recorder_.stop();
+    }
+}
+
+void OpenGlVideoRenderer::saveScreenshot(const RgbFrame& frame) {
+    const std::string path = makeCapturePath("screenshot", ".bmp");
+    if (saveRgbFrameAsBmp(frame, path)) {
+        SPDLOG_INFO("Screenshot saved: {}", path);
+    } else {
+        SPDLOG_WARN("Failed to save screenshot: {}", path);
+    }
+}
+
+void OpenGlVideoRenderer::toggleRecording() {
+    if (recorder_.isRecording()) {
+        recorder_.stop();
+        return;
+    }
+
+    if (!window_) {
+        SPDLOG_WARN("Cannot start recording before renderer is initialized");
+        return;
+    }
+
+    int drawableWidth = 0;
+    int drawableHeight = 0;
+    SDL_GL_GetDrawableSize(window_, &drawableWidth, &drawableHeight);
+    if (drawableWidth <= 0 || drawableHeight <= 0) {
+        SPDLOG_WARN("Cannot start recording with empty drawable size");
+        return;
+    }
+
+    const std::string path = makeCapturePath("recording", ".avi");
+    if (!recorder_.start(path, drawableWidth, drawableHeight, recordingFps_)) {
+        SPDLOG_WARN("Failed to start recording: {}", path);
+    }
 }
 
 #ifdef RTSP_ENABLE_CUDA_INTEROP
@@ -1290,7 +1457,7 @@ bool OpenGlVideoRenderer::downloadCudaFrameToNv12(const MediaFrame& frame,
 }
 #endif
 
-std::array<std::string, 7> OpenGlVideoRenderer::makeOverlayLines() const {
+std::array<std::string, 9> OpenGlVideoRenderer::makeOverlayLines() const {
     std::ostringstream fps;
     fps << "FPS: " << std::fixed << std::setprecision(1) << playbackStats_.fps;
 
@@ -1301,7 +1468,9 @@ std::array<std::string, 7> OpenGlVideoRenderer::makeOverlayLines() const {
         "DECODED: " + std::to_string(playbackStats_.decodedFrames),
         "DROPPED: " + std::to_string(playbackStats_.droppedFrames),
         "BUFFER: " + std::to_string(playbackStats_.jitterBufferSize),
-        "LATENCY: " + std::to_string(playbackStats_.latencyMs) + "MS"
+        "LATENCY: " + std::to_string(playbackStats_.latencyMs) + "MS",
+        "FILTER: " + filterPipeline_.describe(),
+        recorder_.isRecording() ? "REC: ON" : "REC: OFF"
     };
 }
 

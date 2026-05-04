@@ -80,6 +80,7 @@ public:
         , hwDecodeActive_(false)
         , hwDecodeStatus_("off")
         , hardwareFrameOutputEnabled_(false)
+        , connectionOptions_()
         , cudaFrameLayoutLogged_(false)
         , openDeadline_(std::chrono::steady_clock::time_point::max())
     {}
@@ -100,16 +101,13 @@ public:
             return false;
         }
 
-        openDeadline_ = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        openDeadline_ = std::chrono::steady_clock::now() +
+                        std::chrono::milliseconds(connectionOptions_.timeoutMs);
         formatContext_->interrupt_callback.callback = &Impl::interruptCallback;
         formatContext_->interrupt_callback.opaque = this;
 
         AVDictionary* options = nullptr;
-        av_dict_set(&options, "rtsp_transport", "tcp", 0);  // 使用TCP
-        av_dict_set(&options, "buffer_size", "1024000", 0);
-        av_dict_set(&options, "stimeout", "5000000", 0);   // 兼容旧版本FFmpeg
-        av_dict_set(&options, "timeout", "5000000", 0);    // 5秒超时
-        av_dict_set(&options, "rw_timeout", "5000000", 0);
+        applyConnectionOptions(&options);
 
         int ret = avformat_open_input(&formatContext_, url.c_str(), nullptr, &options);
         av_dict_free(&options);
@@ -288,6 +286,10 @@ public:
         errorCallback_ = std::move(callback);
     }
 
+    void setConnectionOptions(const RtspConnectionOptions& options) {
+        connectionOptions_ = normalizeConnectionOptions(options);
+    }
+
     void setHardwareDecode(const std::string& backend) {
         hwDecodeBackend_ = toLower(backend);
     }
@@ -312,6 +314,47 @@ public:
     int getHeight() const { return height_; }
 
 private:
+    static RtspConnectionOptions normalizeConnectionOptions(RtspConnectionOptions options) {
+        options.transport = toLower(options.transport);
+        if (options.transport != "tcp" && options.transport != "udp") {
+            SPDLOG_WARN("Unknown RTSP transport '{}', using tcp", options.transport);
+            options.transport = "tcp";
+        }
+
+        options.timeoutMs = std::max(options.timeoutMs, 1);
+        options.bufferSize = std::max(options.bufferSize, 0);
+        options.maxDelayMs = std::max(options.maxDelayMs, 0);
+        options.analyzeDurationMs = std::max(options.analyzeDurationMs, 0);
+        options.probeSizeBytes = std::max(options.probeSizeBytes, 0);
+        options.reorderQueueSize = std::max(options.reorderQueueSize, 0);
+        return options;
+    }
+
+    static void setDictionaryInt(AVDictionary** options, const char* key, int value) {
+        const std::string text = std::to_string(value);
+        av_dict_set(options, key, text.c_str(), 0);
+    }
+
+    void applyConnectionOptions(AVDictionary** options) const {
+        const int timeoutUs = connectionOptions_.timeoutMs * 1000;
+        av_dict_set(options, "rtsp_transport", connectionOptions_.transport.c_str(), 0);
+        setDictionaryInt(options, "buffer_size", connectionOptions_.bufferSize);
+        setDictionaryInt(options, "stimeout", timeoutUs);
+        setDictionaryInt(options, "timeout", timeoutUs);
+        setDictionaryInt(options, "rw_timeout", timeoutUs);
+
+        if (!connectionOptions_.lowLatency) {
+            return;
+        }
+
+        av_dict_set(options, "fflags", "nobuffer", 0);
+        av_dict_set(options, "flags", "low_delay", 0);
+        setDictionaryInt(options, "max_delay", connectionOptions_.maxDelayMs * 1000);
+        setDictionaryInt(options, "analyzeduration", connectionOptions_.analyzeDurationMs * 1000);
+        setDictionaryInt(options, "probesize", connectionOptions_.probeSizeBytes);
+        setDictionaryInt(options, "reorder_queue_size", connectionOptions_.reorderQueueSize);
+    }
+
     static int interruptCallback(void* opaque) {
         auto* self = static_cast<Impl*>(opaque);
         return std::chrono::steady_clock::now() > self->openDeadline_;
@@ -745,6 +788,7 @@ private:
     bool hwDecodeActive_;
     std::string hwDecodeStatus_;
     bool hardwareFrameOutputEnabled_;
+    RtspConnectionOptions connectionOptions_;
     mutable bool cudaFrameLayoutLogged_;
     std::chrono::steady_clock::time_point openDeadline_;
 };
@@ -776,6 +820,10 @@ void RtspClient::setFrameCallback(FrameCallback callback) {
 
 void RtspClient::setErrorCallback(ErrorCallback callback) {
     pImpl_->setErrorCallback(std::move(callback));
+}
+
+void RtspClient::setConnectionOptions(const RtspConnectionOptions& options) {
+    pImpl_->setConnectionOptions(options);
 }
 
 void RtspClient::setHardwareDecode(const std::string& backend) {
