@@ -18,9 +18,9 @@ struct MediaFrame;
 struct RtspConnectionOptions {
     std::string transport = "tcp";
     int timeoutMs = 5000;
-    int bufferSize = 1024000;
-    bool lowLatency = false;
-    int maxDelayMs = 500;
+    int bufferSize = 262144;
+    bool lowLatency = true;
+    int maxDelayMs = 50;
     int analyzeDurationMs = 0;
     int probeSizeBytes = 32768;
     int reorderQueueSize = 0;
@@ -80,6 +80,11 @@ public:
      * @brief 设置RTSP连接参数
      */
     void setConnectionOptions(const RtspConnectionOptions& options);
+
+    /**
+     * @brief 启用或关闭音频解码
+     */
+    void setAudioEnabled(bool enabled);
 
     /**
      * @brief 设置硬件解码后端

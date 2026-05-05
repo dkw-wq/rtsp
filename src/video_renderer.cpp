@@ -118,7 +118,7 @@ bool SdlVideoRenderer::initialize(int width, int height, const std::string& titl
 
     if (!window_) {
         SPDLOG_ERROR("Failed to create window: {}", SDL_GetError());
-        SDL_Quit();
+        SDL_QuitSubSystem(SDL_INIT_VIDEO);
         return false;
     }
 
@@ -133,7 +133,7 @@ bool SdlVideoRenderer::initialize(int width, int height, const std::string& titl
         SPDLOG_ERROR("Failed to create renderer: {}", SDL_GetError());
         SDL_DestroyWindow(window_);
         window_ = nullptr;
-        SDL_Quit();
+        SDL_QuitSubSystem(SDL_INIT_VIDEO);
         return false;
     }
 
@@ -289,7 +289,7 @@ void SdlVideoRenderer::close() {
         window_ = nullptr;
     }
 
-    SDL_Quit();
+    SDL_QuitSubSystem(SDL_INIT_VIDEO);
 
     initialized_ = false;
     width_ = 0;

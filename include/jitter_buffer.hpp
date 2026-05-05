@@ -34,8 +34,13 @@ struct MediaFrame {
     std::shared_ptr<void> hardwareFrameRef; // 持有底层硬件帧生命周期
     int width;                         // 视频宽度
     int height;                        // 视频高度
+    int sampleRate;                    // 音频采样率
+    int channels;                      // 音频声道数
+    int bytesPerSample;                // 单样本字节数
     uint64_t pts;                      // 显示时间戳
     uint64_t dts;                      // 解码时间戳
+    double ptsSeconds;                 // 秒级显示时间戳
+    double durationSeconds;            // 帧持续时间
     bool keyFrame;                     // 是否为关键帧
     std::chrono::microseconds recvTime; // 接收时间
 
@@ -47,8 +52,13 @@ struct MediaFrame {
         , hardwareFrameRef(nullptr)
         , width(0)
         , height(0)
+        , sampleRate(0)
+        , channels(0)
+        , bytesPerSample(0)
         , pts(0)
         , dts(0)
+        , ptsSeconds(0.0)
+        , durationSeconds(0.0)
         , keyFrame(false)
         , recvTime(0)
     {}
@@ -65,7 +75,7 @@ public:
      * @param maxSize 最大缓冲帧数
      * @param latencyMs 目标延迟(毫秒)
      */
-    JitterBuffer(size_t maxSize = 30, uint32_t latencyMs = 100);
+    JitterBuffer(size_t maxSize = 12, uint32_t latencyMs = 30);
 
     ~JitterBuffer();
 

@@ -61,19 +61,23 @@ bool JitterBuffer::pop(std::shared_ptr<MediaFrame>& frame, uint32_t timeoutMs) {
         return false;
     }
 
-    // 获取队首帧
-    frame = buffer_.front();
-
     // 检查是否应该释放(基于延迟)
-    if (!shouldRelease(frame)) {
+    const auto frontFrame = buffer_.front();
+    if (!shouldRelease(frontFrame)) {
         return false;
     }
 
+    // 获取队首帧
+    frame = frontFrame;
     buffer_.pop();
     return true;
 }
 
 bool JitterBuffer::shouldRelease(const std::shared_ptr<MediaFrame>& frame) const {
+    if (latencyMs_ == 0) {
+        return true;
+    }
+
     // 简单策略：关键帧立即释放，非关键帧需要累积一定数量
     if (frame->keyFrame) {
         return true;
@@ -84,8 +88,7 @@ bool JitterBuffer::shouldRelease(const std::shared_ptr<MediaFrame>& frame) const
     const auto bufferedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
         now - frame->recvTime).count();
 
-    // 达到配置延迟后释放；缓冲积累过多时也释放，避免越积越慢
-    return bufferedMs >= latencyMs_ || buffer_.size() >= (maxSize_ / 3);
+    return bufferedMs >= latencyMs_;
 }
 
 void JitterBuffer::clear() {

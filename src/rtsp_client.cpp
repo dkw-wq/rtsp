@@ -3,8 +3,10 @@
 #include "video_renderer.hpp"
 #include <spdlog/spdlog.h>
 #include <algorithm>
+#include <condition_variable>
 #include <cctype>
 #include <cstring>
+#include <queue>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -18,7 +20,9 @@ extern "C" {
 #include <libavutil/opt.h>
 #include <libavutil/pixdesc.h>
 #include <libavutil/pixfmt.h>
+#include <libavutil/samplefmt.h>
 #include <libswscale/swscale.h>
+#include <libswresample/swresample.h>
 }
 
 namespace rtsp {
@@ -73,13 +77,21 @@ public:
         , height_(0)
         , formatContext_(nullptr)
         , codecContext_(nullptr)
+        , audioCodecContext_(nullptr)
         , swsContext_(nullptr)
+        , swrContext_(nullptr)
         , hwDeviceContext_(nullptr)
         , videoStream_(-1)
+        , audioStream_(-1)
+        , videoFrameDurationSeconds_(1.0 / 30.0)
+        , nextSyntheticVideoPtsSeconds_(0.0)
+        , lastVideoPtsSeconds_(0.0)
+        , hasLastVideoPts_(false)
         , hwPixelFormat_(AV_PIX_FMT_NONE)
         , hwDecodeActive_(false)
         , hwDecodeStatus_("off")
         , hardwareFrameOutputEnabled_(false)
+        , audioEnabled_(true)
         , connectionOptions_()
         , cudaFrameLayoutLogged_(false)
         , openDeadline_(std::chrono::steady_clock::time_point::max())
@@ -129,12 +141,15 @@ public:
             return false;
         }
 
-        // 查找视频流
+        // 查找音视频流
         videoStream_ = -1;
+        audioStream_ = -1;
         for (unsigned int i = 0; i < formatContext_->nb_streams; i++) {
-            if (formatContext_->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
+            const AVMediaType streamType = formatContext_->streams[i]->codecpar->codec_type;
+            if (videoStream_ < 0 && streamType == AVMEDIA_TYPE_VIDEO) {
                 videoStream_ = i;
-                break;
+            } else if (audioStream_ < 0 && streamType == AVMEDIA_TYPE_AUDIO) {
+                audioStream_ = i;
             }
         }
 
@@ -148,9 +163,15 @@ public:
         AVCodecParameters* codecParams = formatContext_->streams[videoStream_]->codecpar;
         width_ = codecParams->width;
         height_ = codecParams->height;
+        videoFrameDurationSeconds_ = streamFrameDurationSeconds();
+        nextSyntheticVideoPtsSeconds_ = 0.0;
+        lastVideoPtsSeconds_ = 0.0;
+        hasLastVideoPts_ = false;
 
-        SPDLOG_INFO("Video: {}x{}, codec: {}", width_, height_, 
-                    avcodec_get_name(codecParams->codec_id));
+        SPDLOG_INFO("Video: {}x{}, codec: {}, frame_duration={:.3f} ms",
+                    width_, height_,
+                    avcodec_get_name(codecParams->codec_id),
+                    videoFrameDurationSeconds_ * 1000.0);
 
         // 查找解码器
         const AVCodec* softwareCodec = avcodec_find_decoder(codecParams->codec_id);
@@ -225,6 +246,17 @@ public:
             SPDLOG_INFO("Hardware decode inactive, using software decode");
         }
 
+        if (audioEnabled_ && audioStream_ >= 0) {
+            if (!openAudioDecoder()) {
+                SPDLOG_WARN("Audio stream found but could not be opened; continuing video-only");
+                closeAudioDecoder();
+            }
+        } else if (audioEnabled_) {
+            SPDLOG_INFO("No audio stream found");
+        } else {
+            SPDLOG_INFO("Audio decode disabled");
+        }
+
         SPDLOG_INFO("RTSP client connected successfully");
         return true;
     }
@@ -235,6 +267,7 @@ public:
 
     void close() {
         stop();
+        closeAudioDecoder();
         
         if (codecContext_) {
             avcodec_free_context(&codecContext_);
@@ -256,6 +289,10 @@ public:
         }
 
         videoStream_ = -1;
+        audioStream_ = -1;
+        nextSyntheticVideoPtsSeconds_ = 0.0;
+        lastVideoPtsSeconds_ = 0.0;
+        hasLastVideoPts_ = false;
         hwPixelFormat_ = AV_PIX_FMT_NONE;
         hwDecodeActive_ = false;
         hwDecodeStatus_ = hardwareDecodeRequested() ? "not-connected" : "off";
@@ -268,14 +305,22 @@ public:
             return;
         }
         running_ = true;
+        if (audioCodecContext_ != nullptr) {
+            audioThread_ = std::thread(&Impl::audioDecodeLoop, this);
+        }
         receiveThread_ = std::thread(&Impl::receiveLoop, this);
     }
 
     void stop() {
         running_ = false;
+        audioCv_.notify_all();
         if (receiveThread_.joinable()) {
             receiveThread_.join();
         }
+        if (audioThread_.joinable()) {
+            audioThread_.join();
+        }
+        clearAudioPacketQueue();
     }
 
     void setFrameCallback(FrameCallback callback) {
@@ -288,6 +333,10 @@ public:
 
     void setConnectionOptions(const RtspConnectionOptions& options) {
         connectionOptions_ = normalizeConnectionOptions(options);
+    }
+
+    void setAudioEnabled(bool enabled) {
+        audioEnabled_ = enabled;
     }
 
     void setHardwareDecode(const std::string& backend) {
@@ -314,6 +363,11 @@ public:
     int getHeight() const { return height_; }
 
 private:
+    static constexpr int kOutputAudioSampleRate = 48000;
+    static constexpr int kOutputAudioChannels = 2;
+    static constexpr int kOutputAudioBytesPerSample = 2;
+    static constexpr size_t kMaxAudioPacketQueue = 128;
+
     static RtspConnectionOptions normalizeConnectionOptions(RtspConnectionOptions options) {
         options.transport = toLower(options.transport);
         if (options.transport != "tcp" && options.transport != "udp") {
@@ -353,6 +407,289 @@ private:
         setDictionaryInt(options, "analyzeduration", connectionOptions_.analyzeDurationMs * 1000);
         setDictionaryInt(options, "probesize", connectionOptions_.probeSizeBytes);
         setDictionaryInt(options, "reorder_queue_size", connectionOptions_.reorderQueueSize);
+    }
+
+    bool openAudioDecoder() {
+        AVCodecParameters* codecParams = formatContext_->streams[audioStream_]->codecpar;
+        const AVCodec* codec = avcodec_find_decoder(codecParams->codec_id);
+        if (!codec) {
+            SPDLOG_WARN("Audio codec '{}' not found", avcodec_get_name(codecParams->codec_id));
+            return false;
+        }
+
+        audioCodecContext_ = avcodec_alloc_context3(codec);
+        if (!audioCodecContext_) {
+            SPDLOG_WARN("Failed to allocate audio codec context");
+            return false;
+        }
+
+        int ret = avcodec_parameters_to_context(audioCodecContext_, codecParams);
+        if (ret < 0) {
+            SPDLOG_WARN("Failed to copy audio codec parameters: {}", ffmpegError(ret));
+            return false;
+        }
+
+        if (audioCodecContext_->ch_layout.nb_channels <= 0) {
+            av_channel_layout_default(&audioCodecContext_->ch_layout, 2);
+        }
+
+        ret = avcodec_open2(audioCodecContext_, codec, nullptr);
+        if (ret < 0) {
+            SPDLOG_WARN("Failed to open audio codec '{}': {}", codec->name, ffmpegError(ret));
+            return false;
+        }
+
+        AVChannelLayout outputLayout{};
+        av_channel_layout_default(&outputLayout, kOutputAudioChannels);
+        ret = swr_alloc_set_opts2(
+            &swrContext_,
+            &outputLayout,
+            AV_SAMPLE_FMT_S16,
+            kOutputAudioSampleRate,
+            &audioCodecContext_->ch_layout,
+            audioCodecContext_->sample_fmt,
+            audioCodecContext_->sample_rate,
+            0,
+            nullptr);
+        av_channel_layout_uninit(&outputLayout);
+        if (ret < 0 || swrContext_ == nullptr) {
+            SPDLOG_WARN("Failed to allocate audio resampler: {}", ffmpegError(ret));
+            return false;
+        }
+
+        ret = swr_init(swrContext_);
+        if (ret < 0) {
+            SPDLOG_WARN("Failed to initialize audio resampler: {}", ffmpegError(ret));
+            return false;
+        }
+
+        SPDLOG_INFO("Audio: codec={}, input={} Hz/{} ch, output={} Hz/{} ch S16",
+                    codec->name,
+                    audioCodecContext_->sample_rate,
+                    audioCodecContext_->ch_layout.nb_channels,
+                    kOutputAudioSampleRate,
+                    kOutputAudioChannels);
+        return true;
+    }
+
+    void closeAudioDecoder() {
+        if (swrContext_) {
+            swr_free(&swrContext_);
+        }
+        if (audioCodecContext_) {
+            avcodec_free_context(&audioCodecContext_);
+        }
+    }
+
+    bool frameTimestampSeconds(const AVFrame* frame, int streamIndex, double& seconds) const {
+        int64_t timestamp = frame->best_effort_timestamp;
+        if (timestamp == AV_NOPTS_VALUE) {
+            timestamp = frame->pts;
+        }
+        if (timestamp == AV_NOPTS_VALUE || streamIndex < 0) {
+            return false;
+        }
+
+        seconds = static_cast<double>(timestamp) *
+                  av_q2d(formatContext_->streams[streamIndex]->time_base);
+        return true;
+    }
+
+    double timestampSeconds(const AVFrame* frame, int streamIndex) const {
+        double seconds = 0.0;
+        return frameTimestampSeconds(frame, streamIndex, seconds) ? seconds : 0.0;
+    }
+
+    double streamFrameDurationSeconds() const {
+        if (!formatContext_ || videoStream_ < 0) {
+            return 1.0 / 30.0;
+        }
+
+        const AVStream* stream = formatContext_->streams[videoStream_];
+        AVRational frameRate = stream->avg_frame_rate;
+        if (frameRate.num <= 0 || frameRate.den <= 0) {
+            frameRate = stream->r_frame_rate;
+        }
+
+        if (frameRate.num > 0 && frameRate.den > 0) {
+            return av_q2d(av_inv_q(frameRate));
+        }
+
+        return 1.0 / 30.0;
+    }
+
+    double stableVideoTimestampSeconds(const AVFrame* frame) {
+        double candidate = 0.0;
+        const bool hasCandidate = frameTimestampSeconds(frame, videoStream_, candidate);
+        bool useCandidate = hasCandidate;
+
+        if (hasLastVideoPts_ && hasCandidate) {
+            const double delta = candidate - lastVideoPtsSeconds_;
+            const double maxReasonableDelta = std::max(0.20, videoFrameDurationSeconds_ * 4.0);
+            if (delta <= 0.0 || delta > maxReasonableDelta) {
+                useCandidate = false;
+            }
+        }
+
+        const double ptsSeconds =
+            useCandidate ? candidate : nextSyntheticVideoPtsSeconds_;
+        hasLastVideoPts_ = true;
+        lastVideoPtsSeconds_ = ptsSeconds;
+        nextSyntheticVideoPtsSeconds_ = ptsSeconds + videoFrameDurationSeconds_;
+        return ptsSeconds;
+    }
+
+    uint64_t normalizedTimestamp(const AVFrame* frame) const {
+        int64_t timestamp = frame->best_effort_timestamp;
+        if (timestamp == AV_NOPTS_VALUE) {
+            timestamp = frame->pts;
+        }
+        if (timestamp == AV_NOPTS_VALUE || timestamp < 0) {
+            return 0;
+        }
+
+        return static_cast<uint64_t>(timestamp);
+    }
+
+    bool fillAudioFrame(const AVFrame* sourceFrame, MediaFrame& mediaFrame) {
+        if (!swrContext_ || !audioCodecContext_) {
+            return false;
+        }
+
+        const int sourceRate =
+            sourceFrame->sample_rate > 0 ? sourceFrame->sample_rate : audioCodecContext_->sample_rate;
+        const int64_t delay = swr_get_delay(swrContext_, sourceRate);
+        const int outputSamples = static_cast<int>(av_rescale_rnd(
+            delay + sourceFrame->nb_samples,
+            kOutputAudioSampleRate,
+            sourceRate,
+            AV_ROUND_UP));
+        if (outputSamples <= 0) {
+            return false;
+        }
+
+        mediaFrame.type = MediaFrame::Type::AUDIO;
+        mediaFrame.sampleRate = kOutputAudioSampleRate;
+        mediaFrame.channels = kOutputAudioChannels;
+        mediaFrame.bytesPerSample = kOutputAudioBytesPerSample;
+        mediaFrame.pts = normalizedTimestamp(sourceFrame);
+        mediaFrame.ptsSeconds = timestampSeconds(sourceFrame, audioStream_);
+        mediaFrame.data.resize(static_cast<size_t>(outputSamples) *
+                               static_cast<size_t>(kOutputAudioChannels) *
+                               static_cast<size_t>(kOutputAudioBytesPerSample));
+
+        uint8_t* outputData[1] = {mediaFrame.data.data()};
+        const int convertedSamples = swr_convert(
+            swrContext_,
+            outputData,
+            outputSamples,
+            const_cast<const uint8_t**>(sourceFrame->extended_data),
+            sourceFrame->nb_samples);
+        if (convertedSamples < 0) {
+            SPDLOG_WARN("Audio resample failed: {}", ffmpegError(convertedSamples));
+            return false;
+        }
+
+        mediaFrame.data.resize(static_cast<size_t>(convertedSamples) *
+                               static_cast<size_t>(kOutputAudioChannels) *
+                               static_cast<size_t>(kOutputAudioBytesPerSample));
+        mediaFrame.durationSeconds =
+            static_cast<double>(convertedSamples) / static_cast<double>(kOutputAudioSampleRate);
+        return !mediaFrame.data.empty();
+    }
+
+    void enqueueAudioPacket(const AVPacket* packet) {
+        AVPacket* queuedPacket = av_packet_alloc();
+        if (!queuedPacket) {
+            return;
+        }
+
+        const int ret = av_packet_ref(queuedPacket, packet);
+        if (ret < 0) {
+            SPDLOG_WARN("Failed to reference audio packet: {}", ffmpegError(ret));
+            av_packet_free(&queuedPacket);
+            return;
+        }
+
+        {
+            std::lock_guard<std::mutex> lock(audioMutex_);
+            while (audioPacketQueue_.size() >= kMaxAudioPacketQueue) {
+                AVPacket* oldPacket = audioPacketQueue_.front();
+                audioPacketQueue_.pop();
+                av_packet_free(&oldPacket);
+            }
+            audioPacketQueue_.push(queuedPacket);
+        }
+        audioCv_.notify_one();
+    }
+
+    void clearAudioPacketQueue() {
+        std::lock_guard<std::mutex> lock(audioMutex_);
+        while (!audioPacketQueue_.empty()) {
+            AVPacket* packet = audioPacketQueue_.front();
+            audioPacketQueue_.pop();
+            av_packet_free(&packet);
+        }
+    }
+
+    void audioDecodeLoop() {
+        SPDLOG_INFO("Audio decode loop started");
+
+        AVFrame* audioFrame = av_frame_alloc();
+        if (!audioFrame) {
+            SPDLOG_WARN("Failed to allocate audio decode frame");
+            return;
+        }
+
+        while (running_) {
+            AVPacket* packet = nullptr;
+            {
+                std::unique_lock<std::mutex> lock(audioMutex_);
+                audioCv_.wait(lock, [this] {
+                    return !running_ || !audioPacketQueue_.empty();
+                });
+
+                if (!running_) {
+                    break;
+                }
+
+                packet = audioPacketQueue_.front();
+                audioPacketQueue_.pop();
+            }
+
+            if (!packet || audioCodecContext_ == nullptr) {
+                av_packet_free(&packet);
+                continue;
+            }
+
+            int ret = avcodec_send_packet(audioCodecContext_, packet);
+            av_packet_free(&packet);
+            if (ret < 0) {
+                SPDLOG_WARN("Send audio packet error: {}", ffmpegError(ret));
+                continue;
+            }
+
+            while (running_ && ret >= 0) {
+                ret = avcodec_receive_frame(audioCodecContext_, audioFrame);
+                if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) {
+                    break;
+                }
+                if (ret < 0) {
+                    SPDLOG_WARN("Receive audio frame error: {}", ffmpegError(ret));
+                    break;
+                }
+
+                auto mediaFrame = std::make_shared<MediaFrame>();
+                if (fillAudioFrame(audioFrame, *mediaFrame) && frameCallback_) {
+                    frameCallback_(mediaFrame);
+                }
+
+                av_frame_unref(audioFrame);
+            }
+        }
+
+        av_frame_free(&audioFrame);
+        SPDLOG_INFO("Audio decode loop ended");
     }
 
     static int interruptCallback(void* opaque) {
@@ -644,6 +981,7 @@ private:
             av_frame_free(&frame);
             av_frame_free(&softwareFrame);
             running_ = false;
+            audioCv_.notify_all();
             return;
         }
         auto lastReadProgress = std::chrono::steady_clock::now();
@@ -712,8 +1050,10 @@ private:
                         mediaFrame->type = MediaFrame::Type::VIDEO;
                         mediaFrame->width = outputFrame->width;
                         mediaFrame->height = outputFrame->height;
-                        mediaFrame->pts = outputFrame->pts;
+                        mediaFrame->pts = normalizedTimestamp(outputFrame);
                         mediaFrame->dts = outputFrame->pkt_dts;
+                        mediaFrame->ptsSeconds = stableVideoTimestampSeconds(outputFrame);
+                        mediaFrame->durationSeconds = videoFrameDurationSeconds_;
                         mediaFrame->keyFrame = (outputFrame->flags & AV_FRAME_FLAG_KEY) != 0;
 
                         bool mediaFrameReady = false;
@@ -757,6 +1097,8 @@ private:
                         av_frame_unref(softwareFrame);
                     }
                 }
+            } else if (packet->stream_index == audioStream_ && audioCodecContext_ != nullptr) {
+                enqueueAudioPacket(packet);
             }
 
             av_packet_unref(packet);
@@ -767,11 +1109,16 @@ private:
         av_packet_free(&packet);
 
         running_ = false;
+        audioCv_.notify_all();
         SPDLOG_INFO("Receive loop ended");
     }
 
     std::atomic<bool> running_;
     std::thread receiveThread_;
+    std::thread audioThread_;
+    std::mutex audioMutex_;
+    std::condition_variable audioCv_;
+    std::queue<AVPacket*> audioPacketQueue_;
     FrameCallback frameCallback_;
     ErrorCallback errorCallback_;
 
@@ -780,14 +1127,22 @@ private:
 
     AVFormatContext* formatContext_;
     AVCodecContext* codecContext_;
+    AVCodecContext* audioCodecContext_;
     SwsContext* swsContext_;
+    SwrContext* swrContext_;
     AVBufferRef* hwDeviceContext_;
     int videoStream_;
+    int audioStream_;
+    double videoFrameDurationSeconds_;
+    double nextSyntheticVideoPtsSeconds_;
+    double lastVideoPtsSeconds_;
+    bool hasLastVideoPts_;
     std::string hwDecodeBackend_;
     AVPixelFormat hwPixelFormat_;
     bool hwDecodeActive_;
     std::string hwDecodeStatus_;
     bool hardwareFrameOutputEnabled_;
+    bool audioEnabled_;
     RtspConnectionOptions connectionOptions_;
     mutable bool cudaFrameLayoutLogged_;
     std::chrono::steady_clock::time_point openDeadline_;
@@ -824,6 +1179,10 @@ void RtspClient::setErrorCallback(ErrorCallback callback) {
 
 void RtspClient::setConnectionOptions(const RtspConnectionOptions& options) {
     pImpl_->setConnectionOptions(options);
+}
+
+void RtspClient::setAudioEnabled(bool enabled) {
+    pImpl_->setAudioEnabled(enabled);
 }
 
 void RtspClient::setHardwareDecode(const std::string& backend) {

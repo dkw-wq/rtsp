@@ -1,8 +1,10 @@
 param(
     [string]$CameraName = "HP True Vision FHD Camera",
+    [string]$AudioName = "麦克风阵列 (2- 适用于数字麦克风的英特尔® 智音技术)",
     [string]$RtspUrl = "rtsp://127.0.0.1:8554/webcam",
     [string]$VideoSize = "1280x720",
-    [int]$Framerate = 30
+    [int]$Framerate = 30,
+    [switch]$NoAudio
 )
 
 $ErrorActionPreference = "Stop"
@@ -45,10 +47,22 @@ if (Test-Path $ffmpegPidFile) {
     }
 }
 
+$inputName = "video=$CameraName"
+if (!$NoAudio -and ![string]::IsNullOrWhiteSpace($AudioName)) {
+    $inputName = "${inputName}:audio=$AudioName"
+}
+
+$audioArgs = if ($NoAudio -or [string]::IsNullOrWhiteSpace($AudioName)) {
+    "-an"
+} else {
+    "-c:a aac -ar 48000 -ac 2 -b:a 128k"
+}
+
 $ffmpegArgs = "-hide_banner -nostats -loglevel warning " +
     "-f dshow -rtbufsize 100M -video_size $VideoSize -framerate $Framerate -vcodec mjpeg " +
-    "-i `"video=$CameraName`" " +
-    "-an -c:v libx264 -preset ultrafast -tune zerolatency -g $Framerate -pix_fmt yuv420p " +
+    "-i `"$inputName`" " +
+    "-c:v libx264 -preset ultrafast -tune zerolatency -g $Framerate -pix_fmt yuv420p " +
+    "$audioArgs " +
     "-f rtsp -rtsp_transport tcp $RtspUrl"
 
 $ffmpegProcess = Start-Process `

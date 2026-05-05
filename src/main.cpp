@@ -1,6 +1,7 @@
 #include "rtsp_client.hpp"
 #include "video_renderer.hpp"
 #include "jitter_buffer.hpp"
+#include "audio_player.hpp"
 
 #include <spdlog/spdlog.h>
 #include <yaml-cpp/yaml.h>
@@ -12,6 +13,7 @@
 #include <chrono>
 #include <cctype>
 #include <cstdint>
+#include <cmath>
 #include <algorithm>
 #include <vector>
 
@@ -108,6 +110,20 @@ std::string describeLowLatency(const rtsp::RtspConnectionOptions& options) {
            ", reorder_queue_size=" + std::to_string(options.reorderQueueSize);
 }
 
+struct SyncOptions {
+    bool enabled = true;
+    int maxWaitMs = 16;
+    int lateDropMs = 250;
+};
+
+struct SyncState {
+    bool initialized = false;
+    double videoBaseSeconds = 0.0;
+    double audioBaseSeconds = 0.0;
+    bool audioBaseInitialized = false;
+    std::chrono::steady_clock::time_point wallBaseTime{};
+};
+
 } // namespace
 
 // 全局变量用于控制主循环
@@ -126,8 +142,10 @@ int main(int argc, char* argv[]) {
     std::string hwDecodeBackend = "none";
     std::vector<std::string> openglFilterNames = {"none"};
     rtsp::RtspConnectionOptions rtspOptions;
-    size_t jitterMaxSize = 30;
-    uint32_t jitterLatencyMs = 100;
+    rtsp::AudioPlaybackOptions audioOptions;
+    SyncOptions syncOptions;
+    size_t jitterMaxSize = 12;
+    uint32_t jitterLatencyMs = 30;
     bool reconnectEnabled = true;
     uint32_t reconnectInitialDelayMs = 1000;
     uint32_t reconnectMaxDelayMs = 5000;
@@ -200,6 +218,23 @@ int main(int argc, char* argv[]) {
                 }
             }
         }
+        if (config["audio"]) {
+            const auto audioConfig = config["audio"];
+            if (audioConfig["enabled"]) {
+                audioOptions.enabled = audioConfig["enabled"].as<bool>();
+            }
+            assignNonNegativeInt(audioConfig, "target_latency_ms", audioOptions.targetLatencyMs);
+            assignPositiveInt(audioConfig, "max_queue_ms", audioOptions.maxQueueMs);
+            assignPositiveInt(audioConfig, "hard_reset_queue_ms", audioOptions.hardResetQueueMs);
+        }
+        if (config["sync"]) {
+            const auto syncConfig = config["sync"];
+            if (syncConfig["enabled"]) {
+                syncOptions.enabled = syncConfig["enabled"].as<bool>();
+            }
+            assignNonNegativeInt(syncConfig, "max_wait_ms", syncOptions.maxWaitMs);
+            assignPositiveInt(syncConfig, "late_drop_ms", syncOptions.lateDropMs);
+        }
         if (config["reconnect"]) {
             const auto reconnectConfig = config["reconnect"];
             if (reconnectConfig["enabled"]) {
@@ -246,14 +281,21 @@ int main(int argc, char* argv[]) {
                 describeLowLatency(rtspOptions));
     SPDLOG_INFO("OpenGL shader pipeline: {}", describeFilters(openglFilterNames));
     SPDLOG_INFO("Jitter buffer: max_size={}, latency_ms={}", jitterMaxSize, jitterLatencyMs);
+    SPDLOG_INFO("Audio: enabled={}, target_latency_ms={}, max_queue_ms={}, hard_reset_queue_ms={}",
+                audioOptions.enabled, audioOptions.targetLatencyMs,
+                audioOptions.maxQueueMs, audioOptions.hardResetQueueMs);
+    SPDLOG_INFO("A/V sync: enabled={}, max_wait_ms={}, late_drop_ms={}",
+                syncOptions.enabled, syncOptions.maxWaitMs, syncOptions.lateDropMs);
     SPDLOG_INFO("Reconnect: enabled={}, initial_delay_ms={}, max_delay_ms={}",
                 reconnectEnabled, reconnectInitialDelayMs, reconnectMaxDelayMs);
 
     // 创建组件
     auto rtspClient = std::make_unique<rtsp::RtspClient>();
     rtspClient->setConnectionOptions(rtspOptions);
+    rtspClient->setAudioEnabled(audioOptions.enabled);
     rtspClient->setHardwareDecode(hwDecodeBackend);
     auto jitterBuffer = std::make_unique<rtsp::JitterBuffer>(jitterMaxSize, jitterLatencyMs);
+    auto audioPlayer = std::make_unique<rtsp::AudioPlayer>(audioOptions);
     std::unique_ptr<rtsp::VideoRenderer> renderer;
     const std::string rendererBackend = toLower(rendererName);
     const bool usesOpenGlRenderer = rendererBackend == "opengl" || rendererBackend == "gl";
@@ -272,7 +314,16 @@ int main(int argc, char* argv[]) {
     }
 
     // 设置帧回调
-    rtspClient->setFrameCallback([&jitterBuffer](const std::shared_ptr<rtsp::MediaFrame>& frame) {
+    rtspClient->setFrameCallback([&jitterBuffer, &audioPlayer](const std::shared_ptr<rtsp::MediaFrame>& frame) {
+        if (!frame) {
+            return;
+        }
+
+        if (frame->type == rtsp::MediaFrame::Type::AUDIO) {
+            audioPlayer->pushFrame(frame);
+            return;
+        }
+
         jitterBuffer->push(frame);
     });
 
@@ -320,6 +371,7 @@ int main(int argc, char* argv[]) {
                 width = newWidth;
                 height = newHeight;
                 jitterBuffer->clear();
+                audioPlayer->reset();
                 rtspClient->start();
                 SPDLOG_INFO("Streaming started, press ESC or Q to quit");
                 return true;
@@ -348,10 +400,13 @@ int main(int argc, char* argv[]) {
 
     // 主渲染循环
     std::shared_ptr<rtsp::MediaFrame> frame;
+    std::shared_ptr<rtsp::MediaFrame> pendingVideoFrame;
     rtsp::PlaybackStats playbackStats;
     playbackStats.decoderBackend = displayDecodeBackend(rtspClient->getDecodeBackend());
     playbackStats.hardwareDecodeStatus = rtspClient->getHardwareDecodeStatus();
     uint64_t renderedFramesSinceFpsUpdate = 0;
+    uint64_t syncDroppedFrames = 0;
+    SyncState syncState;
     auto lastFpsUpdateTime = std::chrono::steady_clock::now();
 
     while (g_running && renderer->handleEvents()) {
@@ -360,11 +415,15 @@ int main(int argc, char* argv[]) {
             rtspClient->stop();
             rtspClient->disconnect();
             jitterBuffer->clear();
+            audioPlayer->reset();
+            pendingVideoFrame.reset();
 
             playbackStats = {};
             playbackStats.decoderBackend = "CPU";
             playbackStats.hardwareDecodeStatus = rtspClient->getHardwareDecodeStatus();
             renderedFramesSinceFpsUpdate = 0;
+            syncDroppedFrames = 0;
+            syncState = {};
             lastFpsUpdateTime = std::chrono::steady_clock::now();
 
             if (!reconnectEnabled || !connectStream(true)) {
@@ -374,9 +433,16 @@ int main(int argc, char* argv[]) {
             continue;
         }
 
-        // 从jitter buffer获取帧
-        if (jitterBuffer->pop(frame, 10)) {
-            const auto now = std::chrono::steady_clock::now();
+        if (!pendingVideoFrame) {
+            std::shared_ptr<rtsp::MediaFrame> nextFrame;
+            if (jitterBuffer->pop(nextFrame, 1)) {
+                pendingVideoFrame = nextFrame;
+            }
+        }
+
+        if (pendingVideoFrame) {
+            frame = pendingVideoFrame;
+            auto now = std::chrono::steady_clock::now();
             if (frame->recvTime.count() > 0) {
                 const auto frameRecvTime = std::chrono::steady_clock::time_point(frame->recvTime);
                 playbackStats.latencyMs = static_cast<uint32_t>(
@@ -388,13 +454,98 @@ int main(int argc, char* argv[]) {
             playbackStats.hardwareDecodeStatus = rtspClient->getHardwareDecodeStatus();
             playbackStats.decodedFrames = jitterStats.totalFrames;
             playbackStats.droppedFrames = jitterStats.droppedFrames;
+            playbackStats.syncDroppedFrames = syncDroppedFrames;
             playbackStats.jitterBufferSize = jitterStats.bufferSize;
+            const auto audioStats = audioPlayer->getStats();
+            playbackStats.audioActive = audioStats.active;
+            playbackStats.audioQueueMs = audioStats.queuedMs;
+
+            if (audioStats.sampleRate > 0 &&
+                !audioStats.active &&
+                audioStats.queuedMs < audioStats.targetLatencyMs) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+                if (!renderer->handleEvents()) {
+                    g_running = false;
+                    break;
+                }
+                continue;
+            }
+
+            if (frame->ptsSeconds > 0.0) {
+                if (!syncState.initialized) {
+                    syncState.initialized = true;
+                    syncState.videoBaseSeconds = frame->ptsSeconds;
+                    syncState.wallBaseTime = std::chrono::steady_clock::now();
+                    SPDLOG_INFO("Video sync base: video={:.3f}s",
+                                syncState.videoBaseSeconds);
+                }
+
+                const auto wallElapsedSeconds = std::chrono::duration<double>(
+                    std::chrono::steady_clock::now() - syncState.wallBaseTime).count();
+                double videoDelayMs =
+                    ((frame->ptsSeconds - syncState.videoBaseSeconds) - wallElapsedSeconds) * 1000.0;
+
+                if (syncOptions.enabled && audioPlayer->hasClock()) {
+                    const double audioClock = audioPlayer->clockSeconds();
+                    if (!syncState.audioBaseInitialized) {
+                        syncState.audioBaseInitialized = true;
+                        syncState.audioBaseSeconds = audioClock;
+                        SPDLOG_INFO("A/V sync base: video={:.3f}s, audio={:.3f}s",
+                                    syncState.videoBaseSeconds, syncState.audioBaseSeconds);
+                    }
+
+                    const double avDiffMs =
+                        ((frame->ptsSeconds - syncState.videoBaseSeconds) -
+                         (audioClock - syncState.audioBaseSeconds)) * 1000.0;
+                    playbackStats.avSyncDiffMs = static_cast<int32_t>(std::lround(avDiffMs));
+
+                    if (syncOptions.lateDropMs > 0 &&
+                        avDiffMs < -static_cast<double>(syncOptions.lateDropMs)) {
+                        ++syncDroppedFrames;
+                        playbackStats.syncDroppedFrames = syncDroppedFrames;
+                        pendingVideoFrame.reset();
+                        continue;
+                    }
+                } else if (syncOptions.enabled) {
+                    playbackStats.avSyncDiffMs = 0;
+                    syncState.audioBaseInitialized = false;
+                } else {
+                    playbackStats.avSyncDiffMs = 0;
+                }
+
+                if (videoDelayMs > 1.0 && syncOptions.maxWaitMs > 0) {
+                    const int waitMs =
+                        std::clamp(static_cast<int>(std::ceil(videoDelayMs)), 1, syncOptions.maxWaitMs);
+                    std::this_thread::sleep_for(std::chrono::milliseconds(waitMs));
+                    if (!renderer->handleEvents()) {
+                        g_running = false;
+                        break;
+                    }
+
+                    continue;
+                }
+
+                if (syncOptions.lateDropMs > 0 &&
+                    videoDelayMs < -static_cast<double>(syncOptions.lateDropMs)) {
+                    ++syncDroppedFrames;
+                    playbackStats.syncDroppedFrames = syncDroppedFrames;
+                    pendingVideoFrame.reset();
+                    continue;
+                }
+            } else {
+                playbackStats.avSyncDiffMs = 0;
+                if (!audioPlayer->hasClock()) {
+                    syncState = {};
+                }
+            }
 
             renderer->setPlaybackStats(playbackStats);
             if (renderer->render(frame)) {
                 ++renderedFramesSinceFpsUpdate;
             }
+            pendingVideoFrame.reset();
 
+            now = std::chrono::steady_clock::now();
             const auto elapsed = now - lastFpsUpdateTime;
             if (elapsed >= std::chrono::seconds(1)) {
                 const double elapsedSeconds =
@@ -413,6 +564,7 @@ int main(int argc, char* argv[]) {
     // 停止接收
     rtspClient->stop();
     rtspClient->disconnect();
+    audioPlayer->reset();
 
     SPDLOG_INFO("RTSP Player stopped");
     return 0;

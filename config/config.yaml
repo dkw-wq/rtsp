@@ -14,11 +14,11 @@ rtsp:
   # 连接和读写超时(毫秒)
   timeout_ms: 5000
   # FFmpeg输入缓冲区大小(字节)
-  buffer_size: 1024000
-  # 低延迟模式会启用 nobuffer/low_delay，并缩短探测和重排序等待
+  buffer_size: 262144
+  # 低延迟模式会启用 nobuffer/low_delay，并缩短探测和重排序等待。
   low_latency:
-    enabled: false
-    max_delay_ms: 500
+    enabled: true
+    max_delay_ms: 50
     analyze_duration_ms: 0
     probe_size_bytes: 32768
     reorder_queue_size: 0
@@ -26,7 +26,20 @@ rtsp:
 # Jitter Buffer设置
 jitter_buffer:
   max_size: 30      # 最大缓冲帧数
-  latency_ms: 100  # 目标延迟(毫秒)
+  latency_ms: 100   # 目标延迟(毫秒)
+
+# 音频播放设置
+audio:
+  enabled: true
+  target_latency_ms: 30
+  max_queue_ms: 300
+  hard_reset_queue_ms: 1500
+
+# 音视频同步设置：以音频时钟为主时钟
+sync:
+  enabled: true
+  max_wait_ms: 16
+  late_drop_ms: 250
 
 # 断线重连设置
 reconnect:

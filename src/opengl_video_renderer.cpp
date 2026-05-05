@@ -557,7 +557,7 @@ private:
     void drawText(float x, float y, const std::string& text, float scale);
     void drawRect(float x, float y, float width, float height);
     void flushOverlay(float red, float green, float blue, float alpha);
-    std::array<std::string, 9> makeOverlayLines() const;
+    std::array<std::string, 12> makeOverlayLines() const;
 
     SDL_Window* window_;
     SDL_GLContext glContext_;
@@ -669,7 +669,7 @@ bool OpenGlVideoRenderer::initialize(int width, int height, const std::string& t
 
     if (!window_) {
         SPDLOG_ERROR("Failed to create OpenGL window: {}", SDL_GetError());
-        SDL_Quit();
+        SDL_QuitSubSystem(SDL_INIT_VIDEO);
         return false;
     }
 
@@ -845,7 +845,7 @@ void OpenGlVideoRenderer::close() {
         window_ = nullptr;
     }
 
-    SDL_Quit();
+    SDL_QuitSubSystem(SDL_INIT_VIDEO);
 
     yLocation_ = -1;
     uvLocation_ = -1;
@@ -1457,7 +1457,7 @@ bool OpenGlVideoRenderer::downloadCudaFrameToNv12(const MediaFrame& frame,
 }
 #endif
 
-std::array<std::string, 9> OpenGlVideoRenderer::makeOverlayLines() const {
+std::array<std::string, 12> OpenGlVideoRenderer::makeOverlayLines() const {
     std::ostringstream fps;
     fps << "FPS: " << std::fixed << std::setprecision(1) << playbackStats_.fps;
 
@@ -1467,8 +1467,12 @@ std::array<std::string, 9> OpenGlVideoRenderer::makeOverlayLines() const {
         "HW: " + playbackStats_.hardwareDecodeStatus,
         "DECODED: " + std::to_string(playbackStats_.decodedFrames),
         "DROPPED: " + std::to_string(playbackStats_.droppedFrames),
+        "SYNC DROP: " + std::to_string(playbackStats_.syncDroppedFrames),
         "BUFFER: " + std::to_string(playbackStats_.jitterBufferSize),
         "LATENCY: " + std::to_string(playbackStats_.latencyMs) + "MS",
+        "AUDIO: " + std::string(playbackStats_.audioActive ? "ON " : "OFF ") +
+            std::to_string(playbackStats_.audioQueueMs) + "MS",
+        "AV DIFF: " + std::to_string(playbackStats_.avSyncDiffMs) + "MS",
         "FILTER: " + filterPipeline_.describe(),
         recorder_.isRecording() ? "REC: ON" : "REC: OFF"
     };

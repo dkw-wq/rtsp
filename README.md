@@ -30,14 +30,33 @@ RTSP 连接参数：
 rtsp:
   transport: "tcp"        # tcp 或 udp
   timeout_ms: 5000        # 连接和读写超时
-  buffer_size: 1024000    # FFmpeg 输入缓冲区
+  buffer_size: 262144     # FFmpeg 输入缓冲区
   low_latency:
-    enabled: false        # 启用 nobuffer/low_delay 等低延迟选项
-    max_delay_ms: 500
+    enabled: true         # 启用 nobuffer/low_delay 等低延迟选项
+    max_delay_ms: 50
     analyze_duration_ms: 0
     probe_size_bytes: 32768
     reorder_queue_size: 0
 ```
+
+音频与音视频同步：
+
+```yaml
+audio:
+  enabled: true
+  target_latency_ms: 30
+  max_queue_ms: 300
+  hard_reset_queue_ms: 1500
+
+sync:
+  enabled: true
+  max_wait_ms: 16
+  late_drop_ms: 250
+```
+
+播放器会解码 RTSP 中的音频 track，重采样为 48kHz stereo S16 后交给 SDL 播放。开启音频时，视频以音频时钟为主时钟：视频早到会短暂等待，晚到超过 `late_drop_ms` 会丢帧追赶。
+
+视频 jitter buffer 默认 `latency_ms: 30`，音频也保留很短的 `target_latency_ms: 30` 预缓冲；音视频同步逻辑仍然启用。如果想更稳，可以把二者一起调到 `300` 或 `1000`。
 
 OpenGL 滤镜：
 
@@ -73,6 +92,10 @@ reconnect:
 启动本机摄像头 RTSP 流：
 
 .\scripts\start_webcam_rtsp.ps1
+
+脚本默认会把本机摄像头和内置麦克风推到同一个 RTSP URL。若要关闭音频：
+
+.\scripts\start_webcam_rtsp.ps1 -NoAudio
 
 然后运行播放器：
 
