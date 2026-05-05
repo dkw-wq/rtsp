@@ -23,6 +23,18 @@ find_package(SDL2 CONFIG REQUIRED)
 # OpenGL
 find_package(OpenGL REQUIRED)
 
+# Vulkan
+find_package(Vulkan REQUIRED)
+find_program(GLSLC_EXECUTABLE
+    NAMES glslc
+    HINTS
+        "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/tools/shaderc"
+        "D:/vcpkg/installed/x64-windows/tools/shaderc"
+)
+if(NOT GLSLC_EXECUTABLE)
+    message(FATAL_ERROR "glslc not found. Install shaderc with vcpkg: vcpkg install shaderc:x64-windows")
+endif()
+
 # CUDA/OpenGL interop is optional. When the CUDA Toolkit is present, the
 # OpenGL renderer can upload CUDA decoded frames into GL textures without a
 # CPU round-trip.
@@ -69,6 +81,7 @@ set(SOURCES
     src/frame_capture.cpp
     src/video_renderer.cpp
     src/opengl_video_renderer.cpp
+    src/vulkan_video_renderer.cpp
 )
 
 set(HEADERS
@@ -84,6 +97,32 @@ add_executable(rtsp_player ${SOURCES} ${HEADERS})
 target_compile_definitions(rtsp_player PRIVATE SDL_MAIN_HANDLED)
 target_link_directories(rtsp_player PRIVATE ${FFMPEG_LIBRARY_DIRS})
 
+set(VULKAN_SHADER_OUTPUT_DIR ${CMAKE_BINARY_DIR}/shaders/vulkan)
+set(VULKAN_SHADER_SOURCES
+    ${CMAKE_SOURCE_DIR}/shaders/vulkan/video.vert
+    ${CMAKE_SOURCE_DIR}/shaders/vulkan/nv12.frag
+)
+set(VULKAN_SHADER_OUTPUTS)
+foreach(SHADER_SOURCE ${VULKAN_SHADER_SOURCES})
+    get_filename_component(SHADER_NAME ${SHADER_SOURCE} NAME)
+    set(SHADER_OUTPUT ${VULKAN_SHADER_OUTPUT_DIR}/${SHADER_NAME}.spv)
+    add_custom_command(
+        OUTPUT ${SHADER_OUTPUT}
+        COMMAND ${CMAKE_COMMAND} -E make_directory ${VULKAN_SHADER_OUTPUT_DIR}
+        COMMAND ${GLSLC_EXECUTABLE} ${SHADER_SOURCE} -o ${SHADER_OUTPUT}
+        DEPENDS ${SHADER_SOURCE}
+        VERBATIM
+    )
+    list(APPEND VULKAN_SHADER_OUTPUTS ${SHADER_OUTPUT})
+endforeach()
+add_custom_target(vulkan_shaders DEPENDS ${VULKAN_SHADER_OUTPUTS})
+add_dependencies(rtsp_player vulkan_shaders)
+add_custom_command(TARGET rtsp_player POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:rtsp_player>/shaders/vulkan"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different ${VULKAN_SHADER_OUTPUTS} "$<TARGET_FILE_DIR:rtsp_player>/shaders/vulkan"
+    VERBATIM
+)
+
 if(CUDAToolkit_FOUND)
     target_compile_definitions(rtsp_player PRIVATE RTSP_ENABLE_CUDA_INTEROP=1)
 endif()
@@ -94,6 +133,7 @@ target_link_libraries(rtsp_player
     ${FFMPEG_LIBRARIES}
     $<IF:$<TARGET_EXISTS:SDL2::SDL2>,SDL2::SDL2,SDL2::SDL2-static>
     OpenGL::GL
+    Vulkan::Vulkan
     yaml-cpp::yaml-cpp
     spdlog::spdlog
 )

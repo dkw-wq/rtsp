@@ -273,6 +273,15 @@ int main(int argc, char* argv[]) {
         rtspUrl = argv[1];
     }
 
+    const std::string rendererBackend = toLower(rendererName);
+    const bool usesOpenGlRenderer = rendererBackend == "opengl" || rendererBackend == "gl";
+    const bool usesVulkanRenderer = rendererBackend == "vulkan" || rendererBackend == "vk";
+    if (usesVulkanRenderer && toLower(hwDecodeBackend) != "none") {
+        SPDLOG_WARN("Vulkan renderer currently uses CPU NV12 upload; disabling hardware decode backend '{}'",
+                    hwDecodeBackend);
+        hwDecodeBackend = "none";
+    }
+
     SPDLOG_INFO("RTSP URL: {}", rtspUrl);
     SPDLOG_INFO("Renderer backend: {}", rendererName);
     SPDLOG_INFO("Hardware decode: {}", hwDecodeBackend);
@@ -297,8 +306,6 @@ int main(int argc, char* argv[]) {
     auto jitterBuffer = std::make_unique<rtsp::JitterBuffer>(jitterMaxSize, jitterLatencyMs);
     auto audioPlayer = std::make_unique<rtsp::AudioPlayer>(audioOptions);
     std::unique_ptr<rtsp::VideoRenderer> renderer;
-    const std::string rendererBackend = toLower(rendererName);
-    const bool usesOpenGlRenderer = rendererBackend == "opengl" || rendererBackend == "gl";
 #ifdef RTSP_ENABLE_CUDA_INTEROP
     rtspClient->setHardwareFrameOutput(usesOpenGlRenderer);
 #else
@@ -306,6 +313,8 @@ int main(int argc, char* argv[]) {
 #endif
     if (usesOpenGlRenderer) {
         renderer = rtsp::createOpenGlVideoRenderer(openglFilterNames);
+    } else if (usesVulkanRenderer) {
+        renderer = rtsp::createVulkanVideoRenderer();
     } else {
         if (rendererBackend != "sdl") {
             SPDLOG_WARN("Unknown renderer backend '{}', using sdl", rendererName);
@@ -408,6 +417,25 @@ int main(int argc, char* argv[]) {
     uint64_t syncDroppedFrames = 0;
     SyncState syncState;
     auto lastFpsUpdateTime = std::chrono::steady_clock::now();
+    auto updateFrameLatency = [](const std::shared_ptr<rtsp::MediaFrame>& currentFrame,
+                                 rtsp::PlaybackStats& stats) {
+        if (!currentFrame || currentFrame->recvTime.count() <= 0) {
+            return;
+        }
+
+        const auto now = std::chrono::steady_clock::now();
+        const auto frameRecvTime = std::chrono::steady_clock::time_point(currentFrame->recvTime);
+        stats.latencyMs = static_cast<uint32_t>(
+            std::chrono::duration_cast<std::chrono::milliseconds>(now - frameRecvTime).count());
+    };
+    auto dropReadyVideoFrames = [&jitterBuffer]() {
+        uint64_t dropped = 0;
+        std::shared_ptr<rtsp::MediaFrame> staleFrame;
+        while (jitterBuffer->pop(staleFrame, 0)) {
+            ++dropped;
+        }
+        return dropped;
+    };
 
     while (g_running && renderer->handleEvents()) {
         if (!rtspClient->isRunning()) {
@@ -442,12 +470,7 @@ int main(int argc, char* argv[]) {
 
         if (pendingVideoFrame) {
             frame = pendingVideoFrame;
-            auto now = std::chrono::steady_clock::now();
-            if (frame->recvTime.count() > 0) {
-                const auto frameRecvTime = std::chrono::steady_clock::time_point(frame->recvTime);
-                playbackStats.latencyMs = static_cast<uint32_t>(
-                    std::chrono::duration_cast<std::chrono::milliseconds>(now - frameRecvTime).count());
-            }
+            updateFrameLatency(frame, playbackStats);
 
             const auto jitterStats = jitterBuffer->getStats();
             playbackStats.decoderBackend = displayDecodeBackend(rtspClient->getDecodeBackend());
@@ -460,9 +483,14 @@ int main(int argc, char* argv[]) {
             playbackStats.audioActive = audioStats.active;
             playbackStats.audioQueueMs = audioStats.queuedMs;
 
-            if (audioStats.sampleRate > 0 &&
+            if (syncOptions.enabled &&
+                audioStats.sampleRate > 0 &&
                 !audioStats.active &&
                 audioStats.queuedMs < audioStats.targetLatencyMs) {
+                ++syncDroppedFrames;
+                syncDroppedFrames += dropReadyVideoFrames();
+                playbackStats.syncDroppedFrames = syncDroppedFrames;
+                pendingVideoFrame.reset();
                 std::this_thread::sleep_for(std::chrono::milliseconds(5));
                 if (!renderer->handleEvents()) {
                     g_running = false;
@@ -471,7 +499,7 @@ int main(int argc, char* argv[]) {
                 continue;
             }
 
-            if (frame->ptsSeconds > 0.0) {
+            if (syncOptions.enabled && frame->ptsSeconds > 0.0) {
                 if (!syncState.initialized) {
                     syncState.initialized = true;
                     syncState.videoBaseSeconds = frame->ptsSeconds;
@@ -485,7 +513,7 @@ int main(int argc, char* argv[]) {
                 double videoDelayMs =
                     ((frame->ptsSeconds - syncState.videoBaseSeconds) - wallElapsedSeconds) * 1000.0;
 
-                if (syncOptions.enabled && audioPlayer->hasClock()) {
+                if (audioPlayer->hasClock()) {
                     const double audioClock = audioPlayer->clockSeconds();
                     if (!syncState.audioBaseInitialized) {
                         syncState.audioBaseInitialized = true;
@@ -494,58 +522,113 @@ int main(int argc, char* argv[]) {
                                     syncState.videoBaseSeconds, syncState.audioBaseSeconds);
                     }
 
-                    const double avDiffMs =
-                        ((frame->ptsSeconds - syncState.videoBaseSeconds) -
-                         (audioClock - syncState.audioBaseSeconds)) * 1000.0;
-                    playbackStats.avSyncDiffMs = static_cast<int32_t>(std::lround(avDiffMs));
+                    auto frameAudioDiffMs = [&syncState, audioClock](
+                                                const std::shared_ptr<rtsp::MediaFrame>& currentFrame) {
+                        return ((currentFrame->ptsSeconds - syncState.videoBaseSeconds) -
+                                (audioClock - syncState.audioBaseSeconds)) * 1000.0;
+                    };
 
-                    if (syncOptions.lateDropMs > 0 &&
-                        avDiffMs < -static_cast<double>(syncOptions.lateDropMs)) {
+                    double avDiffMs = frameAudioDiffMs(frame);
+                    bool waitingForNewerFrame = false;
+
+                    while (syncOptions.lateDropMs > 0 &&
+                           avDiffMs < -static_cast<double>(syncOptions.lateDropMs)) {
                         ++syncDroppedFrames;
-                        playbackStats.syncDroppedFrames = syncDroppedFrames;
-                        pendingVideoFrame.reset();
+
+                        std::shared_ptr<rtsp::MediaFrame> catchUpFrame;
+                        if (!jitterBuffer->pop(catchUpFrame, 0)) {
+                            pendingVideoFrame.reset();
+                            waitingForNewerFrame = true;
+                            break;
+                        }
+
+                        pendingVideoFrame = catchUpFrame;
+                        frame = pendingVideoFrame;
+                        updateFrameLatency(frame, playbackStats);
+                        avDiffMs = frameAudioDiffMs(frame);
+                    }
+
+                    playbackStats.avSyncDiffMs = static_cast<int32_t>(std::lround(avDiffMs));
+                    playbackStats.syncDroppedFrames = syncDroppedFrames;
+
+                    if (waitingForNewerFrame) {
                         continue;
                     }
-                } else if (syncOptions.enabled) {
-                    playbackStats.avSyncDiffMs = 0;
-                    syncState.audioBaseInitialized = false;
+
+                    if (avDiffMs > 1.0 && syncOptions.maxWaitMs > 0) {
+                        const int waitMs =
+                            std::clamp(static_cast<int>(std::ceil(avDiffMs)), 1, syncOptions.maxWaitMs);
+                        std::this_thread::sleep_for(std::chrono::milliseconds(waitMs));
+                        if (!renderer->handleEvents()) {
+                            g_running = false;
+                            break;
+                        }
+
+                        continue;
+                    }
                 } else {
                     playbackStats.avSyncDiffMs = 0;
-                }
+                    syncState.audioBaseInitialized = false;
 
-                if (videoDelayMs > 1.0 && syncOptions.maxWaitMs > 0) {
-                    const int waitMs =
-                        std::clamp(static_cast<int>(std::ceil(videoDelayMs)), 1, syncOptions.maxWaitMs);
-                    std::this_thread::sleep_for(std::chrono::milliseconds(waitMs));
-                    if (!renderer->handleEvents()) {
-                        g_running = false;
-                        break;
+                    if (videoDelayMs > 1.0 && syncOptions.maxWaitMs > 0) {
+                        const int waitMs =
+                            std::clamp(static_cast<int>(std::ceil(videoDelayMs)), 1, syncOptions.maxWaitMs);
+                        std::this_thread::sleep_for(std::chrono::milliseconds(waitMs));
+                        if (!renderer->handleEvents()) {
+                            g_running = false;
+                            break;
+                        }
+
+                        continue;
                     }
 
-                    continue;
-                }
+                    bool waitingForNewerFrame = false;
+                    while (syncOptions.lateDropMs > 0 &&
+                           videoDelayMs < -static_cast<double>(syncOptions.lateDropMs)) {
+                        ++syncDroppedFrames;
 
-                if (syncOptions.lateDropMs > 0 &&
-                    videoDelayMs < -static_cast<double>(syncOptions.lateDropMs)) {
-                    ++syncDroppedFrames;
+                        std::shared_ptr<rtsp::MediaFrame> catchUpFrame;
+                        if (!jitterBuffer->pop(catchUpFrame, 0)) {
+                            pendingVideoFrame.reset();
+                            waitingForNewerFrame = true;
+                            break;
+                        }
+
+                        pendingVideoFrame = catchUpFrame;
+                        frame = pendingVideoFrame;
+                        updateFrameLatency(frame, playbackStats);
+
+                        const auto updatedWallElapsedSeconds = std::chrono::duration<double>(
+                            std::chrono::steady_clock::now() - syncState.wallBaseTime).count();
+                        videoDelayMs =
+                            ((frame->ptsSeconds - syncState.videoBaseSeconds) -
+                             updatedWallElapsedSeconds) * 1000.0;
+                    }
+
                     playbackStats.syncDroppedFrames = syncDroppedFrames;
-                    pendingVideoFrame.reset();
-                    continue;
+                    if (waitingForNewerFrame) {
+                        continue;
+                    }
                 }
             } else {
                 playbackStats.avSyncDiffMs = 0;
-                if (!audioPlayer->hasClock()) {
+                if (!syncOptions.enabled || !audioPlayer->hasClock()) {
                     syncState = {};
                 }
             }
 
+            const auto updatedJitterStats = jitterBuffer->getStats();
+            playbackStats.decodedFrames = updatedJitterStats.totalFrames;
+            playbackStats.droppedFrames = updatedJitterStats.droppedFrames;
+            playbackStats.jitterBufferSize = updatedJitterStats.bufferSize;
+            playbackStats.syncDroppedFrames = syncDroppedFrames;
             renderer->setPlaybackStats(playbackStats);
             if (renderer->render(frame)) {
                 ++renderedFramesSinceFpsUpdate;
             }
             pendingVideoFrame.reset();
 
-            now = std::chrono::steady_clock::now();
+            const auto now = std::chrono::steady_clock::now();
             const auto elapsed = now - lastFpsUpdateTime;
             if (elapsed >= std::chrono::seconds(1)) {
                 const double elapsedSeconds =

@@ -32,12 +32,12 @@ jitter_buffer:
 audio:
   enabled: true
   target_latency_ms: 30
-  max_queue_ms: 300
+  max_queue_ms: 800
   hard_reset_queue_ms: 1500
 
 # 音视频同步设置：以音频时钟为主时钟
 sync:
-  enabled: true
+  enabled: true   # AI不要改，只手工改
   max_wait_ms: 16
   late_drop_ms: 250
 
@@ -50,8 +50,8 @@ reconnect:
 # 日志级别: trace, debug, info, warn, error, critical
 log_level: "info"
 
-# 渲染后端: sdl, opengl
-renderer: "opengl"
+# 渲染后端: sdl, opengl, vulkan
+renderer: "vulkan"
 
 # 硬件解码: none, cuda
 hw_decode: "cuda"

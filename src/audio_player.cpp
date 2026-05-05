@@ -42,8 +42,8 @@ public:
         : options_(options)
     {
         options_.targetLatencyMs = std::clamp(options_.targetLatencyMs, 0, 5000);
-        options_.maxQueueMs = std::max(options_.maxQueueMs, 20);
-        options_.maxQueueMs = std::max(options_.maxQueueMs, options_.targetLatencyMs + 300);
+        options_.maxQueueMs = std::max(options_.maxQueueMs, 500);
+        options_.maxQueueMs = std::max(options_.maxQueueMs, options_.targetLatencyMs + 500);
         options_.hardResetQueueMs =
             std::max(options_.hardResetQueueMs, options_.maxQueueMs + 500);
         stats_.enabled = options_.enabled;
@@ -71,13 +71,13 @@ public:
         if (queuedBeforeMs > static_cast<uint32_t>(options_.hardResetQueueMs)) {
             SDL_ClearQueuedAudio(device_);
             queuedAudioEndSeconds_ = frame->ptsSeconds;
-            playbackStarted_ = options_.targetLatencyMs <= 0;
-            SDL_PauseAudioDevice(device_, playbackStarted_ ? 0 : 1);
+            playbackStarted_ = true;
+            SDL_PauseAudioDevice(device_, 0);
             ++stats_.droppedFrames;
             warnQueueLimited("Audio queue exceeded hard limit; resetting queued audio",
                              queuedBeforeMs);
         } else if (queuedBeforeMs > static_cast<uint32_t>(options_.maxQueueMs)) {
-            warnQueueLimited("Audio queue exceeded soft limit; keeping audio continuous",
+            warnQueueLimited("Audio queue exceeded soft limit; waiting for playback to catch up",
                              queuedBeforeMs);
         }
 

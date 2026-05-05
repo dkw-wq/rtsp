@@ -192,7 +192,8 @@ public:
         codecContext_->height = height_;
         codecContext_->time_base = AVRational{1, fps_};
         codecContext_->framerate = AVRational{fps_, 1};
-        codecContext_->pix_fmt = AV_PIX_FMT_YUVJ420P;
+        codecContext_->pix_fmt = AV_PIX_FMT_YUV420P;
+        codecContext_->color_range = AVCOL_RANGE_JPEG;
         codecContext_->bit_rate = static_cast<int64_t>(width_) * height_ * fps_ * 3;
 
         if ((formatContext_->oformat->flags & AVFMT_GLOBALHEADER) != 0) {

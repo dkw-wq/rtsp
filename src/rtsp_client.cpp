@@ -40,6 +40,36 @@ std::string ffmpegError(int errorCode) {
     return errbuf;
 }
 
+AVPixelFormat normalizeDeprecatedPixelFormat(AVPixelFormat format) {
+    switch (format) {
+        case AV_PIX_FMT_YUVJ420P:
+            return AV_PIX_FMT_YUV420P;
+        case AV_PIX_FMT_YUVJ422P:
+            return AV_PIX_FMT_YUV422P;
+        case AV_PIX_FMT_YUVJ444P:
+            return AV_PIX_FMT_YUV444P;
+        case AV_PIX_FMT_YUVJ440P:
+            return AV_PIX_FMT_YUV440P;
+        case AV_PIX_FMT_YUVJ411P:
+            return AV_PIX_FMT_YUV411P;
+        default:
+            return format;
+    }
+}
+
+bool isDeprecatedFullRangePixelFormat(AVPixelFormat format) {
+    switch (format) {
+        case AV_PIX_FMT_YUVJ420P:
+        case AV_PIX_FMT_YUVJ422P:
+        case AV_PIX_FMT_YUVJ444P:
+        case AV_PIX_FMT_YUVJ440P:
+        case AV_PIX_FMT_YUVJ411P:
+            return true;
+        default:
+            return false;
+    }
+}
+
 const char* cudaDecoderName(AVCodecID codecId) {
     switch (codecId) {
         case AV_CODEC_ID_H264:
@@ -93,6 +123,8 @@ public:
         , audioEnabled_(true)
         , connectionOptions_()
         , cudaFrameLayoutLogged_(false)
+        , waitingForVideoKeyframe_(true)
+        , videoStarted_(false)
         , openDeadline_(std::chrono::steady_clock::time_point::max())
     {}
 
@@ -166,6 +198,8 @@ public:
         nextSyntheticVideoPtsSeconds_ = 0.0;
         lastVideoPtsSeconds_ = 0.0;
         hasLastVideoPts_ = false;
+        waitingForVideoKeyframe_ = true;
+        videoStarted_ = false;
 
         SPDLOG_INFO("Video: {}x{}, codec: {}, frame_duration={:.3f} ms",
                     width_, height_,
@@ -199,6 +233,7 @@ public:
             close();
             return false;
         }
+        applyVideoStreamTiming(codecContext_);
 
         bool hardwareDecodePrepared = prepareHardwareDecoder(codec);
         if (codec != softwareCodec && !hardwareDecodePrepared) {
@@ -220,6 +255,7 @@ public:
                 close();
                 return false;
             }
+            applyVideoStreamTiming(codecContext_);
         }
 
         // 打开解码器
@@ -292,6 +328,8 @@ public:
         nextSyntheticVideoPtsSeconds_ = 0.0;
         lastVideoPtsSeconds_ = 0.0;
         hasLastVideoPts_ = false;
+        waitingForVideoKeyframe_ = true;
+        videoStarted_ = false;
         hwPixelFormat_ = AV_PIX_FMT_NONE;
         hwDecodeActive_ = false;
         hwDecodeStatus_ = hardwareDecodeRequested() ? "not-connected" : "off";
@@ -517,6 +555,25 @@ private:
         return 1.0 / 30.0;
     }
 
+    void applyVideoStreamTiming(AVCodecContext* context) const {
+        if (!context || !formatContext_ || videoStream_ < 0) {
+            return;
+        }
+
+        const AVStream* stream = formatContext_->streams[videoStream_];
+        if (stream->time_base.num > 0 && stream->time_base.den > 0) {
+            context->pkt_timebase = stream->time_base;
+        }
+
+        AVRational frameRate = stream->avg_frame_rate;
+        if (frameRate.num <= 0 || frameRate.den <= 0) {
+            frameRate = stream->r_frame_rate;
+        }
+        if (frameRate.num > 0 && frameRate.den > 0) {
+            context->framerate = frameRate;
+        }
+    }
+
     double stableVideoTimestampSeconds(const AVFrame* frame) {
         double candidate = 0.0;
         const bool hasCandidate = frameTimestampSeconds(frame, videoStream_, candidate);
@@ -735,6 +792,7 @@ private:
         };
 
         const auto sourceFormat = static_cast<AVPixelFormat>(sourceFrame->format);
+        const AVPixelFormat swsSourceFormat = normalizeDeprecatedPixelFormat(sourceFormat);
         if (sourceFormat == AV_PIX_FMT_NV12) {
             copyPlane(dstData[0], dstLinesize[0], sourceFrame->data[0],
                       sourceFrame->linesize[0], sourceFrame->width, sourceFrame->height);
@@ -747,7 +805,7 @@ private:
             swsContext_,
             sourceFrame->width,
             sourceFrame->height,
-            sourceFormat,
+            swsSourceFormat,
             sourceFrame->width,
             sourceFrame->height,
             AV_PIX_FMT_NV12,
@@ -760,6 +818,24 @@ private:
             SPDLOG_ERROR("Failed to create NV12 pixel format converter");
             return false;
         }
+
+        const int colorspace =
+            sourceFrame->colorspace == AVCOL_SPC_BT709 ? SWS_CS_ITU709 : SWS_CS_DEFAULT;
+        const int sourceRange =
+            sourceFrame->color_range == AVCOL_RANGE_JPEG ||
+            isDeprecatedFullRangePixelFormat(sourceFormat)
+                ? 1
+                : 0;
+        const int destinationRange = 0;
+        sws_setColorspaceDetails(
+            swsContext_,
+            sws_getCoefficients(colorspace),
+            sourceRange,
+            sws_getCoefficients(colorspace),
+            destinationRange,
+            0,
+            1 << 16,
+            1 << 16);
 
         sws_scale(swsContext_, sourceFrame->data, sourceFrame->linesize, 0,
                   sourceFrame->height, dstData, dstLinesize);
@@ -946,6 +1022,8 @@ private:
         hwDecodeActive_ = false;
         hwPixelFormat_ = AV_PIX_FMT_NONE;
         hwDecodeStatus_ = hardwareDecodeRequested() ? "fallback-cpu" : "off";
+        waitingForVideoKeyframe_ = true;
+        videoStarted_ = false;
 
         codecContext_ = avcodec_alloc_context3(codec);
         if (!codecContext_) {
@@ -958,6 +1036,7 @@ private:
             SPDLOG_ERROR("Failed to copy codec parameters for software fallback: {}", ffmpegError(ret));
             return false;
         }
+        applyVideoStreamTiming(codecContext_);
 
         ret = avcodec_open2(codecContext_, codec, nullptr);
         if (ret < 0) {
@@ -1013,6 +1092,19 @@ private:
             lastReadProgress = std::chrono::steady_clock::now();
 
             if (packet->stream_index == videoStream_) {
+                if (waitingForVideoKeyframe_) {
+                    if ((packet->flags & AV_PKT_FLAG_KEY) == 0) {
+                        av_packet_unref(packet);
+                        continue;
+                    }
+
+                    waitingForVideoKeyframe_ = false;
+                    videoStarted_ = true;
+                    clearAudioPacketQueue();
+                    avcodec_flush_buffers(codecContext_);
+                    SPDLOG_INFO("Video keyframe acquired; starting audio/video decode");
+                }
+
                 // 发送数据包到解码器
                 ret = avcodec_send_packet(codecContext_, packet);
                 if (ret < 0) {
@@ -1097,6 +1189,10 @@ private:
                     }
                 }
             } else if (packet->stream_index == audioStream_ && audioCodecContext_ != nullptr) {
+                if (!videoStarted_) {
+                    av_packet_unref(packet);
+                    continue;
+                }
                 enqueueAudioPacket(packet);
             }
 
@@ -1144,6 +1240,8 @@ private:
     bool audioEnabled_;
     RtspConnectionOptions connectionOptions_;
     mutable bool cudaFrameLayoutLogged_;
+    bool waitingForVideoKeyframe_;
+    bool videoStarted_;
     std::chrono::steady_clock::time_point openDeadline_;
 };
 

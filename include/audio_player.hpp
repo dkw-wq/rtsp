@@ -11,7 +11,7 @@ namespace rtsp {
 struct AudioPlaybackOptions {
     bool enabled = true;
     int targetLatencyMs = 30;
-    int maxQueueMs = 300;
+    int maxQueueMs = 800;
     int hardResetQueueMs = 1500;
 };
 

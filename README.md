@@ -1,6 +1,6 @@
 cd C:\Users\dkw\.a_dkwrtc\rtsp
 
-D:\vcpkg\vcpkg.exe install ffmpeg:x64-windows sdl2:x64-windows yaml-cpp:x64-windows spdlog:x64-windows
+D:\vcpkg\vcpkg.exe install ffmpeg:x64-windows sdl2:x64-windows yaml-cpp:x64-windows spdlog:x64-windows vulkan-headers:x64-windows vulkan-loader:x64-windows shaderc:x64-windows
 
 .\scripts\build.ps1
 
@@ -13,6 +13,14 @@ D:\vcpkg\vcpkg.exe install ffmpeg:x64-windows sdl2:x64-windows yaml-cpp:x64-wind
 编辑 config\config.yaml：
 
 renderer: "opengl"
+
+切换 Vulkan 渲染：
+
+编辑 config\config.yaml：
+
+renderer: "vulkan"
+
+第一版 Vulkan 后端支持 CPU NV12 帧上传和 shader 转 RGB，使用 SDL 创建 Vulkan 窗口并保持视频宽高比。截图、录制、滤镜切换、CUDA/Vulkan 零拷贝互操作后续再补。
 
 启用 NVIDIA NVDEC/CUDA 硬件解码：
 
