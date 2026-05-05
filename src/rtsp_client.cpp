@@ -1,6 +1,5 @@
 #include "rtsp_client.hpp"
-#include "decoder.hpp"
-#include "video_renderer.hpp"
+#include "jitter_buffer.hpp"
 #include <spdlog/spdlog.h>
 #include <algorithm>
 #include <condition_variable>

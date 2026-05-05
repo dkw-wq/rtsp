@@ -64,24 +64,18 @@ include_directories(
 set(SOURCES
     src/main.cpp
     src/rtsp_client.cpp
-    src/rtp_parser.cpp
-    src/h264_depacketizer.cpp
     src/jitter_buffer.cpp
     src/audio_player.cpp
     src/frame_capture.cpp
-    src/decoder.cpp
     src/video_renderer.cpp
     src/opengl_video_renderer.cpp
 )
 
 set(HEADERS
     include/rtsp_client.hpp
-    include/rtp_parser.hpp
-    include/h264_depacketizer.hpp
     include/jitter_buffer.hpp
     include/audio_player.hpp
     include/frame_capture.hpp
-    include/decoder.hpp
     include/video_renderer.hpp
 )
 

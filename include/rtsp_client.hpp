@@ -11,8 +11,6 @@
 
 namespace rtsp {
 
-// Forward declarations
-struct RtpPacket;
 struct MediaFrame;
 
 struct RtspConnectionOptions {
