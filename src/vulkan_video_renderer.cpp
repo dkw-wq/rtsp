@@ -22,6 +22,9 @@
 extern "C" {
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_syswm.h>
+#include <libavutil/error.h>
+#include <libavutil/frame.h>
+#include <libavutil/hwcontext.h>
 }
 
 #include <algorithm>
@@ -158,6 +161,19 @@ void checkVk(VkResult result, const char* operation) {
     }
 }
 
+std::string ffmpegError(int errorCode) {
+    char buffer[AV_ERROR_MAX_STRING_SIZE] = {};
+    av_strerror(errorCode, buffer, sizeof(buffer));
+    return buffer;
+}
+
+void copyPlane(uint8_t* dst, int dstStride, const uint8_t* src,
+               int srcStride, int width, int height) {
+    for (int row = 0; row < height; ++row) {
+        std::memcpy(dst + row * dstStride, src + row * srcStride, width);
+    }
+}
+
 #ifdef RTSP_ENABLE_CUDA_INTEROP
 const char* cudaErrorName(cudaError_t error) {
     return cudaGetErrorString(error);
@@ -278,6 +294,8 @@ private:
     bool submitUploadedFrame();
 #ifdef RTSP_ENABLE_CUDA_INTEROP
     bool renderCudaNv12(const MediaFrame& frame);
+    bool renderCudaNv12ViaCpuFallback(const MediaFrame& frame, const char* reason);
+    bool transferCudaFrameToCpuNv12(const MediaFrame& frame, MediaFrame& cpuFrame) const;
     bool uploadCudaFrameToVulkanBuffers(const MediaFrame& frame);
 #endif
     void recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t imageIndex);
@@ -368,6 +386,8 @@ private:
     cudaExternalSemaphore_t cudaUploadExternalSemaphore_;
     cudaStream_t cudaUploadStream_;
     bool currentUploadUsesCudaSemaphore_;
+    bool cudaInteropDisabled_;
+    bool cudaFallbackLogged_;
     std::shared_ptr<void> pendingCudaUploadFrameRef_;
 #endif
     VulkanBuffer overlayBackgroundBuffer_;
@@ -428,6 +448,8 @@ VulkanVideoRenderer::VulkanVideoRenderer()
     , cudaUploadExternalSemaphore_(nullptr)
     , cudaUploadStream_(nullptr)
     , currentUploadUsesCudaSemaphore_(false)
+    , cudaInteropDisabled_(false)
+    , cudaFallbackLogged_(false)
     , pendingCudaUploadFrameRef_()
 #endif
     , overlayBackgroundBuffer_()
@@ -635,6 +657,8 @@ void VulkanVideoRenderer::close() {
     vkGetMemoryWin32HandleKHR_ = nullptr;
     vkGetSemaphoreWin32HandleKHR_ = nullptr;
     currentUploadUsesCudaSemaphore_ = false;
+    cudaInteropDisabled_ = false;
+    cudaFallbackLogged_ = false;
     pendingCudaUploadFrameRef_.reset();
 #endif
     overlayVertices_.clear();
@@ -1641,6 +1665,10 @@ bool VulkanVideoRenderer::renderCudaNv12(const MediaFrame& frame) {
         return false;
     }
 
+    if (cudaInteropDisabled_) {
+        return renderCudaNv12ViaCpuFallback(frame, "CUDA/Vulkan interop is disabled after a previous failure");
+    }
+
     try {
         checkVk(vkWaitForFences(device_, 1, &inFlightFence_, VK_TRUE,
                                 std::numeric_limits<uint64_t>::max()),
@@ -1657,7 +1685,9 @@ bool VulkanVideoRenderer::renderCudaNv12(const MediaFrame& frame) {
 
         createOrResizeCudaUploadBuffers(frame.width, frame.height);
         if (!ensureCudaUploadSemaphore()) {
-            return false;
+            cudaInteropDisabled_ = true;
+            destroyCudaUploadSemaphore();
+            return renderCudaNv12ViaCpuFallback(frame, "failed to create CUDA/Vulkan upload semaphore");
         }
         pendingCudaUploadFrameRef_ = frame.hardwareFrameRef;
         if (!uploadCudaFrameToVulkanBuffers(frame)) {
@@ -1670,7 +1700,7 @@ bool VulkanVideoRenderer::renderCudaNv12(const MediaFrame& frame) {
             }
             pendingCudaUploadFrameRef_.reset();
             currentUploadUsesCudaSemaphore_ = false;
-            return false;
+            return renderCudaNv12ViaCpuFallback(frame, "failed to copy CUDA frame into Vulkan upload buffer");
         }
 
         uploadYBuffer_ = cudaYBuffer_.vulkan.buffer;
@@ -1682,9 +1712,94 @@ bool VulkanVideoRenderer::renderCudaNv12(const MediaFrame& frame) {
 
         return submitUploadedFrame();
     } catch (const std::exception& e) {
-        SPDLOG_ERROR("Vulkan CUDA render failed: {}", e.what());
+        SPDLOG_WARN("Vulkan CUDA interop failed: {}; falling back to CPU NV12 staging", e.what());
+        cudaInteropDisabled_ = true;
+        pendingCudaUploadFrameRef_.reset();
+        currentUploadUsesCudaSemaphore_ = false;
+        destroyCudaUploadSemaphore();
+        return renderCudaNv12ViaCpuFallback(frame, e.what());
+    }
+}
+
+bool VulkanVideoRenderer::renderCudaNv12ViaCpuFallback(const MediaFrame& frame, const char* reason) {
+    if (!cudaFallbackLogged_) {
+        SPDLOG_WARN("CUDA/Vulkan upload fallback active: {}", reason ? reason : "unknown reason");
+        cudaFallbackLogged_ = true;
+    }
+
+    MediaFrame cpuFrame;
+    if (!transferCudaFrameToCpuNv12(frame, cpuFrame)) {
         return false;
     }
+
+    return renderNv12(cpuFrame);
+}
+
+bool VulkanVideoRenderer::transferCudaFrameToCpuNv12(const MediaFrame& frame,
+                                                     MediaFrame& cpuFrame) const {
+    AVFrame* hardwareFrame = static_cast<AVFrame*>(frame.hardwareFrameRef.get());
+    if (hardwareFrame == nullptr) {
+        SPDLOG_WARN("CUDA CPU fallback cannot run without a retained hardware AVFrame");
+        return false;
+    }
+
+    AVFrame* softwareFrame = av_frame_alloc();
+    if (softwareFrame == nullptr) {
+        SPDLOG_WARN("Failed to allocate CPU fallback AVFrame");
+        return false;
+    }
+
+    const int transferResult = av_hwframe_transfer_data(softwareFrame, hardwareFrame, 0);
+    if (transferResult < 0) {
+        SPDLOG_WARN("Failed to transfer CUDA frame to CPU fallback: {}",
+                    ffmpegError(transferResult));
+        av_frame_free(&softwareFrame);
+        return false;
+    }
+
+    const auto cleanupFrame = std::unique_ptr<AVFrame, void (*)(AVFrame*)>(
+        softwareFrame,
+        [](AVFrame* framePtr) {
+            AVFrame* frameToFree = framePtr;
+            av_frame_free(&frameToFree);
+        });
+
+    if (softwareFrame->format != AV_PIX_FMT_NV12 ||
+        softwareFrame->data[0] == nullptr ||
+        softwareFrame->data[1] == nullptr ||
+        softwareFrame->linesize[0] <= 0 ||
+        softwareFrame->linesize[1] <= 0) {
+        SPDLOG_WARN("CUDA CPU fallback produced unsupported pixel format {}", softwareFrame->format);
+        return false;
+    }
+
+    cpuFrame.type = MediaFrame::Type::VIDEO;
+    cpuFrame.pixelFormat = MediaFrame::PixelFormat::NV12;
+    cpuFrame.width = softwareFrame->width;
+    cpuFrame.height = softwareFrame->height;
+    cpuFrame.pts = frame.pts;
+    cpuFrame.dts = frame.dts;
+    cpuFrame.ptsSeconds = frame.ptsSeconds;
+    cpuFrame.durationSeconds = frame.durationSeconds;
+    cpuFrame.keyFrame = frame.keyFrame;
+
+    const int ySize = cpuFrame.width * cpuFrame.height;
+    cpuFrame.data.resize(static_cast<size_t>(ySize) * 3U / 2U);
+
+    copyPlane(cpuFrame.data.data(),
+              cpuFrame.width,
+              softwareFrame->data[0],
+              softwareFrame->linesize[0],
+              cpuFrame.width,
+              cpuFrame.height);
+    copyPlane(cpuFrame.data.data() + ySize,
+              cpuFrame.width,
+              softwareFrame->data[1],
+              softwareFrame->linesize[1],
+              cpuFrame.width,
+              cpuFrame.height / 2);
+
+    return true;
 }
 
 bool VulkanVideoRenderer::uploadCudaFrameToVulkanBuffers(const MediaFrame& frame) {
