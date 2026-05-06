@@ -18,21 +18,21 @@ rtsp:
   # 低延迟模式会启用 nobuffer/low_delay，并缩短探测和重排序等待。
   low_latency:
     enabled: true
-    max_delay_ms: 50
-    analyze_duration_ms: 0
-    probe_size_bytes: 32768
-    reorder_queue_size: 0
+    max_delay_ms: 100
+    analyze_duration_ms: 50
+    probe_size_bytes: 262144
+    reorder_queue_size: 2
 
 # Jitter Buffer设置
 jitter_buffer:
-  max_size: 30      # 最大缓冲帧数
+  max_size: 40      # 最大缓冲帧数
   latency_ms: 100   # 目标延迟(毫秒)
 
 # 音频播放设置
 audio:
   enabled: true
-  target_latency_ms: 30
-  max_queue_ms: 800
+  target_latency_ms: 50
+  max_queue_ms: 1000
   hard_reset_queue_ms: 1500
 
 # 音视频同步设置：以音频时钟为主时钟

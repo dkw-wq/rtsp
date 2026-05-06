@@ -75,7 +75,7 @@ $ffmpegProcess = Start-Process `
     -PassThru
 
 Set-Content -Path $ffmpegPidFile -Value $ffmpegProcess.Id
-Start-Sleep -Seconds 3
+Start-Sleep -Seconds 7
 
 if ($ffmpegProcess.HasExited) {
     Get-Content (Join-Path $logDir "ffmpeg-webcam.stderr.log") -ErrorAction SilentlyContinue
