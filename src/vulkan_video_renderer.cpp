@@ -53,6 +53,8 @@ const std::vector<const char*> kDeviceExtensions = {
 #ifdef RTSP_ENABLE_CUDA_INTEROP
     VK_KHR_EXTERNAL_MEMORY_EXTENSION_NAME,
     VK_KHR_EXTERNAL_MEMORY_WIN32_EXTENSION_NAME,
+    VK_KHR_EXTERNAL_SEMAPHORE_EXTENSION_NAME,
+    VK_KHR_EXTERNAL_SEMAPHORE_WIN32_EXTENSION_NAME,
 #endif
 };
 
@@ -258,6 +260,9 @@ private:
     void createOrResizeOverlayBuffer(VulkanBuffer& buffer, VkDeviceSize size);
 #ifdef RTSP_ENABLE_CUDA_INTEROP
     void createOrResizeCudaUploadBuffers(int width, int height);
+    bool ensureCudaUploadSemaphore();
+    void destroyCudaUploadSemaphore();
+    void consumeCudaUploadSemaphore();
 #endif
 
     void cleanupSwapchain();
@@ -307,7 +312,7 @@ private:
 
     bool handleKeyboardShortcuts();
     VkViewport videoViewport() const;
-    std::array<std::string, 11> makeStatusLines() const;
+    std::array<std::string, 12> makeStatusLines() const;
     void drawStatusLayout(VkCommandBuffer commandBuffer);
     void drawText(float x, float y, const std::string& text, float scale);
     void drawRect(float x, float y, float width, float height);
@@ -328,6 +333,7 @@ private:
     int width_;
     int height_;
     PlaybackStats playbackStats_;
+    std::string uploadPath_;
 
     VkInstance instance_;
     VkSurfaceKHR surface_;
@@ -357,6 +363,12 @@ private:
     VulkanCudaBuffer cudaYBuffer_;
     VulkanCudaBuffer cudaUvBuffer_;
     PFN_vkGetMemoryWin32HandleKHR vkGetMemoryWin32HandleKHR_;
+    PFN_vkGetSemaphoreWin32HandleKHR vkGetSemaphoreWin32HandleKHR_;
+    VkSemaphore cudaUploadSemaphore_;
+    cudaExternalSemaphore_t cudaUploadExternalSemaphore_;
+    cudaStream_t cudaUploadStream_;
+    bool currentUploadUsesCudaSemaphore_;
+    std::shared_ptr<void> pendingCudaUploadFrameRef_;
 #endif
     VulkanBuffer overlayBackgroundBuffer_;
     VulkanBuffer overlayBuffer_;
@@ -384,6 +396,7 @@ VulkanVideoRenderer::VulkanVideoRenderer()
     , width_(0)
     , height_(0)
     , playbackStats_()
+    , uploadPath_("CPU-STAGING")
     , instance_(VK_NULL_HANDLE)
     , surface_(VK_NULL_HANDLE)
     , physicalDevice_(VK_NULL_HANDLE)
@@ -410,6 +423,12 @@ VulkanVideoRenderer::VulkanVideoRenderer()
     , cudaYBuffer_()
     , cudaUvBuffer_()
     , vkGetMemoryWin32HandleKHR_(nullptr)
+    , vkGetSemaphoreWin32HandleKHR_(nullptr)
+    , cudaUploadSemaphore_(VK_NULL_HANDLE)
+    , cudaUploadExternalSemaphore_(nullptr)
+    , cudaUploadStream_(nullptr)
+    , currentUploadUsesCudaSemaphore_(false)
+    , pendingCudaUploadFrameRef_()
 #endif
     , overlayBackgroundBuffer_()
     , overlayBuffer_()
@@ -556,6 +575,7 @@ void VulkanVideoRenderer::close() {
 
     destroyBuffer(stagingBuffer_);
 #ifdef RTSP_ENABLE_CUDA_INTEROP
+    destroyCudaUploadSemaphore();
     destroyCudaBuffer(cudaYBuffer_);
     destroyCudaBuffer(cudaUvBuffer_);
 #endif
@@ -603,6 +623,7 @@ void VulkanVideoRenderer::close() {
     framebufferResized_ = false;
     width_ = 0;
     height_ = 0;
+    uploadPath_ = "CPU-STAGING";
     physicalDevice_ = VK_NULL_HANDLE;
     graphicsQueue_ = VK_NULL_HANDLE;
     presentQueue_ = VK_NULL_HANDLE;
@@ -612,6 +633,9 @@ void VulkanVideoRenderer::close() {
     uploadUvBufferOffset_ = 0;
 #ifdef RTSP_ENABLE_CUDA_INTEROP
     vkGetMemoryWin32HandleKHR_ = nullptr;
+    vkGetSemaphoreWin32HandleKHR_ = nullptr;
+    currentUploadUsesCudaSemaphore_ = false;
+    pendingCudaUploadFrameRef_.reset();
 #endif
     overlayVertices_.clear();
 }
@@ -744,6 +768,12 @@ void VulkanVideoRenderer::createLogicalDevice() {
             vkGetDeviceProcAddr(device_, "vkGetMemoryWin32HandleKHR"));
     if (!vkGetMemoryWin32HandleKHR_) {
         throw std::runtime_error("vkGetMemoryWin32HandleKHR is unavailable");
+    }
+    vkGetSemaphoreWin32HandleKHR_ =
+        reinterpret_cast<PFN_vkGetSemaphoreWin32HandleKHR>(
+            vkGetDeviceProcAddr(device_, "vkGetSemaphoreWin32HandleKHR"));
+    if (!vkGetSemaphoreWin32HandleKHR_) {
+        throw std::runtime_error("vkGetSemaphoreWin32HandleKHR is unavailable");
     }
 #endif
 
@@ -1222,6 +1252,105 @@ void VulkanVideoRenderer::createOrResizeCudaUploadBuffers(int width, int height)
         cudaUvBuffer_ = createCudaInteropBuffer(uvSize);
     }
 }
+
+bool VulkanVideoRenderer::ensureCudaUploadSemaphore() {
+    if (cudaUploadSemaphore_ != VK_NULL_HANDLE &&
+        cudaUploadExternalSemaphore_ != nullptr &&
+        cudaUploadStream_ != nullptr) {
+        return true;
+    }
+
+    destroyCudaUploadSemaphore();
+
+    VkExportSemaphoreCreateInfo exportInfo{};
+    exportInfo.sType = VK_STRUCTURE_TYPE_EXPORT_SEMAPHORE_CREATE_INFO;
+    exportInfo.handleTypes = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_WIN32_BIT;
+
+    VkSemaphoreCreateInfo semaphoreInfo{};
+    semaphoreInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+    semaphoreInfo.pNext = &exportInfo;
+    checkVk(vkCreateSemaphore(device_, &semaphoreInfo, nullptr, &cudaUploadSemaphore_),
+            "vkCreateSemaphore CUDA upload");
+
+    HANDLE semaphoreHandle = nullptr;
+    VkSemaphoreGetWin32HandleInfoKHR handleInfo{};
+    handleInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_GET_WIN32_HANDLE_INFO_KHR;
+    handleInfo.semaphore = cudaUploadSemaphore_;
+    handleInfo.handleType = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_WIN32_BIT;
+    checkVk(vkGetSemaphoreWin32HandleKHR_(device_, &handleInfo, &semaphoreHandle),
+            "vkGetSemaphoreWin32HandleKHR");
+
+    cudaExternalSemaphoreHandleDesc semaphoreDesc{};
+    semaphoreDesc.type = cudaExternalSemaphoreHandleTypeOpaqueWin32;
+    semaphoreDesc.handle.win32.handle = semaphoreHandle;
+
+    const cudaError_t importError =
+        cudaImportExternalSemaphore(&cudaUploadExternalSemaphore_, &semaphoreDesc);
+    if (semaphoreHandle != nullptr) {
+        CloseHandle(semaphoreHandle);
+    }
+    checkCuda(importError, "cudaImportExternalSemaphore");
+
+    checkCuda(cudaStreamCreateWithFlags(&cudaUploadStream_, cudaStreamNonBlocking),
+              "cudaStreamCreateWithFlags");
+    return true;
+}
+
+void VulkanVideoRenderer::destroyCudaUploadSemaphore() {
+    pendingCudaUploadFrameRef_.reset();
+    currentUploadUsesCudaSemaphore_ = false;
+
+    if (cudaUploadStream_ != nullptr) {
+        const cudaError_t syncError = cudaStreamSynchronize(cudaUploadStream_);
+        if (syncError != cudaSuccess) {
+            SPDLOG_WARN("Failed to synchronize CUDA upload stream during shutdown: {}",
+                        cudaErrorName(syncError));
+        }
+
+        const cudaError_t destroyError = cudaStreamDestroy(cudaUploadStream_);
+        if (destroyError != cudaSuccess) {
+            SPDLOG_WARN("Failed to destroy CUDA upload stream: {}",
+                        cudaErrorName(destroyError));
+        }
+        cudaUploadStream_ = nullptr;
+    }
+
+    if (cudaUploadExternalSemaphore_ != nullptr) {
+        const cudaError_t error = cudaDestroyExternalSemaphore(cudaUploadExternalSemaphore_);
+        if (error != cudaSuccess) {
+            SPDLOG_WARN("Failed to destroy CUDA external semaphore: {}", cudaErrorName(error));
+        }
+        cudaUploadExternalSemaphore_ = nullptr;
+    }
+
+    if (device_ != VK_NULL_HANDLE && cudaUploadSemaphore_ != VK_NULL_HANDLE) {
+        vkDestroySemaphore(device_, cudaUploadSemaphore_, nullptr);
+    }
+    cudaUploadSemaphore_ = VK_NULL_HANDLE;
+}
+
+void VulkanVideoRenderer::consumeCudaUploadSemaphore() {
+    if (!currentUploadUsesCudaSemaphore_ || cudaUploadSemaphore_ == VK_NULL_HANDLE) {
+        return;
+    }
+
+    const VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+    VkSubmitInfo submitInfo{};
+    submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    submitInfo.waitSemaphoreCount = 1;
+    submitInfo.pWaitSemaphores = &cudaUploadSemaphore_;
+    submitInfo.pWaitDstStageMask = &waitStage;
+
+    checkVk(vkResetFences(device_, 1, &inFlightFence_), "vkResetFences CUDA consume");
+    checkVk(vkQueueSubmit(graphicsQueue_, 1, &submitInfo, inFlightFence_),
+            "vkQueueSubmit CUDA consume");
+    checkVk(vkWaitForFences(device_, 1, &inFlightFence_, VK_TRUE,
+                            std::numeric_limits<uint64_t>::max()),
+            "vkWaitForFences CUDA consume");
+
+    currentUploadUsesCudaSemaphore_ = false;
+    pendingCudaUploadFrameRef_.reset();
+}
 #endif
 
 void VulkanVideoRenderer::createOrResizeOverlayBuffer(VulkanBuffer& buffer, VkDeviceSize size) {
@@ -1385,6 +1514,9 @@ bool VulkanVideoRenderer::renderNv12(const MediaFrame& frame) {
         checkVk(vkWaitForFences(device_, 1, &inFlightFence_, VK_TRUE,
                                 std::numeric_limits<uint64_t>::max()),
                 "vkWaitForFences");
+#ifdef RTSP_ENABLE_CUDA_INTEROP
+        pendingCudaUploadFrameRef_.reset();
+#endif
 
         if (frame.width != width_ || frame.height != height_) {
             vkDeviceWaitIdle(device_);
@@ -1405,6 +1537,10 @@ bool VulkanVideoRenderer::renderNv12(const MediaFrame& frame) {
         uploadUvBuffer_ = stagingBuffer_.buffer;
         uploadYBufferOffset_ = 0;
         uploadUvBufferOffset_ = ySize;
+        uploadPath_ = "CPU-STAGING";
+#ifdef RTSP_ENABLE_CUDA_INTEROP
+        currentUploadUsesCudaSemaphore_ = false;
+#endif
 
         return submitUploadedFrame();
     } catch (const std::exception& e) {
@@ -1423,10 +1559,16 @@ bool VulkanVideoRenderer::submitUploadedFrame() {
                                                        VK_NULL_HANDLE,
                                                        &imageIndex);
         if (acquireResult == VK_ERROR_OUT_OF_DATE_KHR) {
+#ifdef RTSP_ENABLE_CUDA_INTEROP
+            consumeCudaUploadSemaphore();
+#endif
             recreateSwapchain();
             return true;
         }
         if (acquireResult != VK_SUCCESS && acquireResult != VK_SUBOPTIMAL_KHR) {
+#ifdef RTSP_ENABLE_CUDA_INTEROP
+            consumeCudaUploadSemaphore();
+#endif
             checkVk(acquireResult, "vkAcquireNextImageKHR");
         }
 
@@ -1434,15 +1576,25 @@ bool VulkanVideoRenderer::submitUploadedFrame() {
         checkVk(vkResetCommandBuffer(commandBuffers_[imageIndex], 0), "vkResetCommandBuffer");
         recordCommandBuffer(commandBuffers_[imageIndex], imageIndex);
 
-        const VkSemaphore waitSemaphores[] = {imageAvailableSemaphore_};
-        const VkPipelineStageFlags waitStages[] = {VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT};
+        std::array<VkSemaphore, 2> waitSemaphores = {imageAvailableSemaphore_, VK_NULL_HANDLE};
+        std::array<VkPipelineStageFlags, 2> waitStages = {
+            VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+            VK_PIPELINE_STAGE_TRANSFER_BIT
+        };
+        uint32_t waitSemaphoreCount = 1;
+#ifdef RTSP_ENABLE_CUDA_INTEROP
+        if (currentUploadUsesCudaSemaphore_) {
+            waitSemaphores[waitSemaphoreCount] = cudaUploadSemaphore_;
+            ++waitSemaphoreCount;
+        }
+#endif
         const VkSemaphore signalSemaphores[] = {renderFinishedSemaphore_};
 
         VkSubmitInfo submitInfo{};
         submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-        submitInfo.waitSemaphoreCount = 1;
-        submitInfo.pWaitSemaphores = waitSemaphores;
-        submitInfo.pWaitDstStageMask = waitStages;
+        submitInfo.waitSemaphoreCount = waitSemaphoreCount;
+        submitInfo.pWaitSemaphores = waitSemaphores.data();
+        submitInfo.pWaitDstStageMask = waitStages.data();
         submitInfo.commandBufferCount = 1;
         submitInfo.pCommandBuffers = &commandBuffers_[imageIndex];
         submitInfo.signalSemaphoreCount = 1;
@@ -1493,6 +1645,7 @@ bool VulkanVideoRenderer::renderCudaNv12(const MediaFrame& frame) {
         checkVk(vkWaitForFences(device_, 1, &inFlightFence_, VK_TRUE,
                                 std::numeric_limits<uint64_t>::max()),
                 "vkWaitForFences");
+        pendingCudaUploadFrameRef_.reset();
 
         if (frame.width != width_ || frame.height != height_) {
             vkDeviceWaitIdle(device_);
@@ -1503,7 +1656,20 @@ bool VulkanVideoRenderer::renderCudaNv12(const MediaFrame& frame) {
         }
 
         createOrResizeCudaUploadBuffers(frame.width, frame.height);
+        if (!ensureCudaUploadSemaphore()) {
+            return false;
+        }
+        pendingCudaUploadFrameRef_ = frame.hardwareFrameRef;
         if (!uploadCudaFrameToVulkanBuffers(frame)) {
+            if (cudaUploadStream_ != nullptr) {
+                const cudaError_t syncError = cudaStreamSynchronize(cudaUploadStream_);
+                if (syncError != cudaSuccess) {
+                    SPDLOG_WARN("Failed to synchronize CUDA upload stream after upload failure: {}",
+                                cudaErrorName(syncError));
+                }
+            }
+            pendingCudaUploadFrameRef_.reset();
+            currentUploadUsesCudaSemaphore_ = false;
             return false;
         }
 
@@ -1511,6 +1677,8 @@ bool VulkanVideoRenderer::renderCudaNv12(const MediaFrame& frame) {
         uploadUvBuffer_ = cudaUvBuffer_.vulkan.buffer;
         uploadYBufferOffset_ = 0;
         uploadUvBufferOffset_ = 0;
+        uploadPath_ = "CUDA-VK-BUFFER";
+        currentUploadUsesCudaSemaphore_ = true;
 
         return submitUploadedFrame();
     } catch (const std::exception& e) {
@@ -1520,14 +1688,20 @@ bool VulkanVideoRenderer::renderCudaNv12(const MediaFrame& frame) {
 }
 
 bool VulkanVideoRenderer::uploadCudaFrameToVulkanBuffers(const MediaFrame& frame) {
+    if (cudaUploadExternalSemaphore_ == nullptr || cudaUploadStream_ == nullptr) {
+        SPDLOG_WARN("CUDA/Vulkan upload semaphore is not initialized");
+        return false;
+    }
+
     const cudaError_t yError =
-        cudaMemcpy2D(cudaYBuffer_.cudaPtr,
-                     static_cast<size_t>(frame.width),
-                     reinterpret_cast<const void*>(frame.gpuData[0]),
-                     static_cast<size_t>(frame.gpuLinesize[0]),
-                     static_cast<size_t>(frame.width),
-                     static_cast<size_t>(frame.height),
-                     cudaMemcpyDeviceToDevice);
+        cudaMemcpy2DAsync(cudaYBuffer_.cudaPtr,
+                          static_cast<size_t>(frame.width),
+                          reinterpret_cast<const void*>(frame.gpuData[0]),
+                          static_cast<size_t>(frame.gpuLinesize[0]),
+                          static_cast<size_t>(frame.width),
+                          static_cast<size_t>(frame.height),
+                          cudaMemcpyDeviceToDevice,
+                          cudaUploadStream_);
     if (yError != cudaSuccess) {
         SPDLOG_WARN("Failed to copy CUDA Y plane to Vulkan upload buffer: {}",
                     cudaErrorName(yError));
@@ -1535,23 +1709,29 @@ bool VulkanVideoRenderer::uploadCudaFrameToVulkanBuffers(const MediaFrame& frame
     }
 
     const cudaError_t uvError =
-        cudaMemcpy2D(cudaUvBuffer_.cudaPtr,
-                     static_cast<size_t>(frame.width),
-                     reinterpret_cast<const void*>(frame.gpuData[1]),
-                     static_cast<size_t>(frame.gpuLinesize[1]),
-                     static_cast<size_t>(frame.width),
-                     static_cast<size_t>(frame.height / 2),
-                     cudaMemcpyDeviceToDevice);
+        cudaMemcpy2DAsync(cudaUvBuffer_.cudaPtr,
+                          static_cast<size_t>(frame.width),
+                          reinterpret_cast<const void*>(frame.gpuData[1]),
+                          static_cast<size_t>(frame.gpuLinesize[1]),
+                          static_cast<size_t>(frame.width),
+                          static_cast<size_t>(frame.height / 2),
+                          cudaMemcpyDeviceToDevice,
+                          cudaUploadStream_);
     if (uvError != cudaSuccess) {
         SPDLOG_WARN("Failed to copy CUDA UV plane to Vulkan upload buffer: {}",
                     cudaErrorName(uvError));
         return false;
     }
 
-    const cudaError_t syncError = cudaDeviceSynchronize();
-    if (syncError != cudaSuccess) {
-        SPDLOG_WARN("Failed to synchronize CUDA upload before Vulkan render: {}",
-                    cudaErrorName(syncError));
+    cudaExternalSemaphoreSignalParams signalParams{};
+    const cudaError_t signalError =
+        cudaSignalExternalSemaphoresAsync(&cudaUploadExternalSemaphore_,
+                                          &signalParams,
+                                          1,
+                                          cudaUploadStream_);
+    if (signalError != cudaSuccess) {
+        SPDLOG_WARN("Failed to signal CUDA/Vulkan upload semaphore: {}",
+                    cudaErrorName(signalError));
         return false;
     }
 
@@ -2013,7 +2193,7 @@ VulkanImage VulkanVideoRenderer::createImage(uint32_t width,
     return image;
 }
 
-std::array<std::string, 11> VulkanVideoRenderer::makeStatusLines() const {
+std::array<std::string, 12> VulkanVideoRenderer::makeStatusLines() const {
     std::ostringstream fps;
     fps << "FPS: " << std::fixed << std::setprecision(1) << playbackStats_.fps;
 
@@ -2021,6 +2201,7 @@ std::array<std::string, 11> VulkanVideoRenderer::makeStatusLines() const {
         fps.str(),
         "DECODER: " + playbackStats_.decoderBackend,
         "HW: " + playbackStats_.hardwareDecodeStatus,
+        "UPLOAD: " + uploadPath_,
         "DECODED: " + std::to_string(playbackStats_.decodedFrames),
         "DROPPED: " + std::to_string(playbackStats_.droppedFrames),
         "SYNC DROP: " + std::to_string(playbackStats_.syncDroppedFrames),
