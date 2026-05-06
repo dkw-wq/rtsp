@@ -15,6 +15,10 @@
 
 #include <vulkan/vulkan.h>
 
+#ifdef RTSP_ENABLE_CUDA_INTEROP
+#include <cuda_runtime.h>
+#endif
+
 extern "C" {
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_syswm.h>
@@ -44,8 +48,12 @@ namespace {
 constexpr int kWindowStartX = SDL_WINDOWPOS_CENTERED;
 constexpr int kWindowStartY = SDL_WINDOWPOS_CENTERED;
 
-const std::array<const char*, 1> kDeviceExtensions = {
-    VK_KHR_SWAPCHAIN_EXTENSION_NAME
+const std::vector<const char*> kDeviceExtensions = {
+    VK_KHR_SWAPCHAIN_EXTENSION_NAME,
+#ifdef RTSP_ENABLE_CUDA_INTEROP
+    VK_KHR_EXTERNAL_MEMORY_EXTENSION_NAME,
+    VK_KHR_EXTERNAL_MEMORY_WIN32_EXTENSION_NAME,
+#endif
 };
 
 struct QueueFamilyIndices {
@@ -67,7 +75,16 @@ struct VulkanBuffer {
     VkBuffer buffer = VK_NULL_HANDLE;
     VkDeviceMemory memory = VK_NULL_HANDLE;
     VkDeviceSize size = 0;
+    VkDeviceSize memorySize = 0;
 };
+
+#ifdef RTSP_ENABLE_CUDA_INTEROP
+struct VulkanCudaBuffer {
+    VulkanBuffer vulkan;
+    cudaExternalMemory_t cudaMemory = nullptr;
+    void* cudaPtr = nullptr;
+};
+#endif
 
 struct VulkanImage {
     VkImage image = VK_NULL_HANDLE;
@@ -138,6 +155,20 @@ void checkVk(VkResult result, const char* operation) {
                                  std::to_string(static_cast<int>(result)));
     }
 }
+
+#ifdef RTSP_ENABLE_CUDA_INTEROP
+const char* cudaErrorName(cudaError_t error) {
+    return cudaGetErrorString(error);
+}
+
+void checkCuda(cudaError_t error, const char* operation) {
+    if (error != cudaSuccess) {
+        throw std::runtime_error(std::string(operation) +
+                                 " failed: " +
+                                 cudaErrorName(error));
+    }
+}
+#endif
 
 std::vector<uint32_t> readSpirvFile(const std::filesystem::path& path) {
     std::ifstream file(path, std::ios::ate | std::ios::binary);
@@ -225,19 +256,31 @@ private:
     void createSyncObjects();
     void createOrResizeStagingBuffer(VkDeviceSize size);
     void createOrResizeOverlayBuffer(VulkanBuffer& buffer, VkDeviceSize size);
+#ifdef RTSP_ENABLE_CUDA_INTEROP
+    void createOrResizeCudaUploadBuffers(int width, int height);
+#endif
 
     void cleanupSwapchain();
     void recreateSwapchain();
     void destroyBuffer(VulkanBuffer& buffer);
+#ifdef RTSP_ENABLE_CUDA_INTEROP
+    void destroyCudaBuffer(VulkanCudaBuffer& buffer);
+#endif
     void destroyImage(VulkanImage& image);
     void destroyVideoImages();
 
     bool renderNv12(const MediaFrame& frame);
+    bool submitUploadedFrame();
+#ifdef RTSP_ENABLE_CUDA_INTEROP
+    bool renderCudaNv12(const MediaFrame& frame);
+    bool uploadCudaFrameToVulkanBuffers(const MediaFrame& frame);
+#endif
     void recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t imageIndex);
     void transitionImage(VkCommandBuffer commandBuffer,
                          VulkanImage& image,
                          VkImageLayout newLayout);
     void copyBufferToImage(VkCommandBuffer commandBuffer,
+                           VkBuffer sourceBuffer,
                            const VulkanImage& image,
                            VkDeviceSize bufferOffset);
 
@@ -254,6 +297,9 @@ private:
     VulkanBuffer createBuffer(VkDeviceSize size,
                               VkBufferUsageFlags usage,
                               VkMemoryPropertyFlags properties) const;
+#ifdef RTSP_ENABLE_CUDA_INTEROP
+    VulkanCudaBuffer createCudaInteropBuffer(VkDeviceSize size) const;
+#endif
     VulkanImage createImage(uint32_t width,
                             uint32_t height,
                             VkFormat format,
@@ -307,8 +353,17 @@ private:
     VulkanImage yImage_;
     VulkanImage uvImage_;
     VulkanBuffer stagingBuffer_;
+#ifdef RTSP_ENABLE_CUDA_INTEROP
+    VulkanCudaBuffer cudaYBuffer_;
+    VulkanCudaBuffer cudaUvBuffer_;
+    PFN_vkGetMemoryWin32HandleKHR vkGetMemoryWin32HandleKHR_;
+#endif
     VulkanBuffer overlayBackgroundBuffer_;
     VulkanBuffer overlayBuffer_;
+    VkBuffer uploadYBuffer_;
+    VkBuffer uploadUvBuffer_;
+    VkDeviceSize uploadYBufferOffset_;
+    VkDeviceSize uploadUvBufferOffset_;
     VkSampler textureSampler_;
     VkDescriptorPool descriptorPool_;
     VkDescriptorSet descriptorSet_;
@@ -351,8 +406,17 @@ VulkanVideoRenderer::VulkanVideoRenderer()
     , yImage_()
     , uvImage_()
     , stagingBuffer_()
+#ifdef RTSP_ENABLE_CUDA_INTEROP
+    , cudaYBuffer_()
+    , cudaUvBuffer_()
+    , vkGetMemoryWin32HandleKHR_(nullptr)
+#endif
     , overlayBackgroundBuffer_()
     , overlayBuffer_()
+    , uploadYBuffer_(VK_NULL_HANDLE)
+    , uploadUvBuffer_(VK_NULL_HANDLE)
+    , uploadYBufferOffset_(0)
+    , uploadUvBufferOffset_(0)
     , textureSampler_(VK_NULL_HANDLE)
     , descriptorPool_(VK_NULL_HANDLE)
     , descriptorSet_(VK_NULL_HANDLE)
@@ -422,12 +486,18 @@ bool VulkanVideoRenderer::render(const std::shared_ptr<MediaFrame>& frame) {
         return false;
     }
 
-    if (frame->pixelFormat != MediaFrame::PixelFormat::NV12) {
-        SPDLOG_ERROR("Vulkan renderer first version expects CPU NV12 frames");
-        return false;
+    if (frame->pixelFormat == MediaFrame::PixelFormat::NV12) {
+        return renderNv12(*frame);
     }
 
-    return renderNv12(*frame);
+#ifdef RTSP_ENABLE_CUDA_INTEROP
+    if (frame->pixelFormat == MediaFrame::PixelFormat::CUDA_NV12) {
+        return renderCudaNv12(*frame);
+    }
+#endif
+
+    SPDLOG_ERROR("Vulkan renderer expected NV12 or CUDA_NV12 frame");
+    return false;
 }
 
 void VulkanVideoRenderer::setPlaybackStats(const PlaybackStats& stats) {
@@ -485,6 +555,10 @@ void VulkanVideoRenderer::close() {
     }
 
     destroyBuffer(stagingBuffer_);
+#ifdef RTSP_ENABLE_CUDA_INTEROP
+    destroyCudaBuffer(cudaYBuffer_);
+    destroyCudaBuffer(cudaUvBuffer_);
+#endif
     destroyBuffer(overlayBackgroundBuffer_);
     destroyBuffer(overlayBuffer_);
     destroyVideoImages();
@@ -532,6 +606,13 @@ void VulkanVideoRenderer::close() {
     physicalDevice_ = VK_NULL_HANDLE;
     graphicsQueue_ = VK_NULL_HANDLE;
     presentQueue_ = VK_NULL_HANDLE;
+    uploadYBuffer_ = VK_NULL_HANDLE;
+    uploadUvBuffer_ = VK_NULL_HANDLE;
+    uploadYBufferOffset_ = 0;
+    uploadUvBufferOffset_ = 0;
+#ifdef RTSP_ENABLE_CUDA_INTEROP
+    vkGetMemoryWin32HandleKHR_ = nullptr;
+#endif
     overlayVertices_.clear();
 }
 
@@ -598,12 +679,29 @@ void VulkanVideoRenderer::pickPhysicalDevice() {
     checkVk(vkEnumeratePhysicalDevices(instance_, &deviceCount, devices.data()),
             "vkEnumeratePhysicalDevices");
 
-    for (VkPhysicalDevice device : devices) {
+    auto selectDevice = [this](VkPhysicalDevice device) {
         if (isDeviceSuitable(device)) {
             physicalDevice_ = device;
             VkPhysicalDeviceProperties properties{};
             vkGetPhysicalDeviceProperties(device, &properties);
             SPDLOG_INFO("Selected Vulkan device: {}", properties.deviceName);
+            return true;
+        }
+        return false;
+    };
+
+#ifdef RTSP_ENABLE_CUDA_INTEROP
+    for (VkPhysicalDevice device : devices) {
+        VkPhysicalDeviceProperties properties{};
+        vkGetPhysicalDeviceProperties(device, &properties);
+        if (properties.vendorID == 0x10DE && selectDevice(device)) {
+            return;
+        }
+    }
+#endif
+
+    for (VkPhysicalDevice device : devices) {
+        if (selectDevice(device)) {
             return;
         }
     }
@@ -639,6 +737,15 @@ void VulkanVideoRenderer::createLogicalDevice() {
     createInfo.ppEnabledExtensionNames = kDeviceExtensions.data();
 
     checkVk(vkCreateDevice(physicalDevice_, &createInfo, nullptr, &device_), "vkCreateDevice");
+
+#ifdef RTSP_ENABLE_CUDA_INTEROP
+    vkGetMemoryWin32HandleKHR_ =
+        reinterpret_cast<PFN_vkGetMemoryWin32HandleKHR>(
+            vkGetDeviceProcAddr(device_, "vkGetMemoryWin32HandleKHR"));
+    if (!vkGetMemoryWin32HandleKHR_) {
+        throw std::runtime_error("vkGetMemoryWin32HandleKHR is unavailable");
+    }
+#endif
 
     vkGetDeviceQueue(device_, indices.graphicsFamily.value(), 0, &graphicsQueue_);
     vkGetDeviceQueue(device_, indices.presentFamily.value(), 0, &presentQueue_);
@@ -1094,8 +1201,28 @@ void VulkanVideoRenderer::createOrResizeStagingBuffer(VkDeviceSize size) {
     stagingBuffer_ = createBuffer(size,
                                   VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
                                   VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-                                      VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+                                       VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 }
+
+#ifdef RTSP_ENABLE_CUDA_INTEROP
+void VulkanVideoRenderer::createOrResizeCudaUploadBuffers(int width, int height) {
+    const VkDeviceSize ySize = static_cast<VkDeviceSize>(width) *
+                               static_cast<VkDeviceSize>(height);
+    const VkDeviceSize uvSize = ySize / 2U;
+
+    if (cudaYBuffer_.vulkan.buffer == VK_NULL_HANDLE ||
+        cudaYBuffer_.vulkan.size < ySize) {
+        destroyCudaBuffer(cudaYBuffer_);
+        cudaYBuffer_ = createCudaInteropBuffer(ySize);
+    }
+
+    if (cudaUvBuffer_.vulkan.buffer == VK_NULL_HANDLE ||
+        cudaUvBuffer_.vulkan.size < uvSize) {
+        destroyCudaBuffer(cudaUvBuffer_);
+        cudaUvBuffer_ = createCudaInteropBuffer(uvSize);
+    }
+}
+#endif
 
 void VulkanVideoRenderer::createOrResizeOverlayBuffer(VulkanBuffer& buffer, VkDeviceSize size) {
     if (buffer.buffer != VK_NULL_HANDLE && buffer.size >= size) {
@@ -1192,6 +1319,29 @@ void VulkanVideoRenderer::destroyBuffer(VulkanBuffer& buffer) {
     buffer = {};
 }
 
+#ifdef RTSP_ENABLE_CUDA_INTEROP
+void VulkanVideoRenderer::destroyCudaBuffer(VulkanCudaBuffer& buffer) {
+    if (buffer.cudaPtr != nullptr) {
+        const cudaError_t error = cudaFree(buffer.cudaPtr);
+        if (error != cudaSuccess) {
+            SPDLOG_WARN("Failed to free CUDA mapped Vulkan buffer: {}", cudaErrorName(error));
+        }
+        buffer.cudaPtr = nullptr;
+    }
+
+    if (buffer.cudaMemory != nullptr) {
+        const cudaError_t error = cudaDestroyExternalMemory(buffer.cudaMemory);
+        if (error != cudaSuccess) {
+            SPDLOG_WARN("Failed to destroy CUDA external memory: {}", cudaErrorName(error));
+        }
+        buffer.cudaMemory = nullptr;
+    }
+
+    destroyBuffer(buffer.vulkan);
+    buffer = {};
+}
+#endif
+
 void VulkanVideoRenderer::destroyImage(VulkanImage& image) {
     if (device_ == VK_NULL_HANDLE) {
         image = {};
@@ -1251,6 +1401,20 @@ bool VulkanVideoRenderer::renderNv12(const MediaFrame& frame) {
         std::memcpy(mappedMemory, frame.data.data(), static_cast<size_t>(requiredSize));
         vkUnmapMemory(device_, stagingBuffer_.memory);
 
+        uploadYBuffer_ = stagingBuffer_.buffer;
+        uploadUvBuffer_ = stagingBuffer_.buffer;
+        uploadYBufferOffset_ = 0;
+        uploadUvBufferOffset_ = ySize;
+
+        return submitUploadedFrame();
+    } catch (const std::exception& e) {
+        SPDLOG_ERROR("Vulkan render failed: {}", e.what());
+        return false;
+    }
+}
+
+bool VulkanVideoRenderer::submitUploadedFrame() {
+    try {
         uint32_t imageIndex = 0;
         VkResult acquireResult = vkAcquireNextImageKHR(device_,
                                                        swapchain_,
@@ -1311,6 +1475,90 @@ bool VulkanVideoRenderer::renderNv12(const MediaFrame& frame) {
     }
 }
 
+#ifdef RTSP_ENABLE_CUDA_INTEROP
+bool VulkanVideoRenderer::renderCudaNv12(const MediaFrame& frame) {
+    if (frame.width <= 0 || frame.height <= 0 ||
+        frame.width % 2 != 0 || frame.height % 2 != 0) {
+        SPDLOG_ERROR("Invalid CUDA NV12 frame dimensions: {}x{}", frame.width, frame.height);
+        return false;
+    }
+
+    if (frame.gpuData[0] == 0 || frame.gpuData[1] == 0 ||
+        frame.gpuLinesize[0] <= 0 || frame.gpuLinesize[1] <= 0) {
+        SPDLOG_ERROR("CUDA NV12 frame is missing GPU plane data");
+        return false;
+    }
+
+    try {
+        checkVk(vkWaitForFences(device_, 1, &inFlightFence_, VK_TRUE,
+                                std::numeric_limits<uint64_t>::max()),
+                "vkWaitForFences");
+
+        if (frame.width != width_ || frame.height != height_) {
+            vkDeviceWaitIdle(device_);
+            width_ = frame.width;
+            height_ = frame.height;
+            createVideoImages();
+            updateDescriptorSet();
+        }
+
+        createOrResizeCudaUploadBuffers(frame.width, frame.height);
+        if (!uploadCudaFrameToVulkanBuffers(frame)) {
+            return false;
+        }
+
+        uploadYBuffer_ = cudaYBuffer_.vulkan.buffer;
+        uploadUvBuffer_ = cudaUvBuffer_.vulkan.buffer;
+        uploadYBufferOffset_ = 0;
+        uploadUvBufferOffset_ = 0;
+
+        return submitUploadedFrame();
+    } catch (const std::exception& e) {
+        SPDLOG_ERROR("Vulkan CUDA render failed: {}", e.what());
+        return false;
+    }
+}
+
+bool VulkanVideoRenderer::uploadCudaFrameToVulkanBuffers(const MediaFrame& frame) {
+    const cudaError_t yError =
+        cudaMemcpy2D(cudaYBuffer_.cudaPtr,
+                     static_cast<size_t>(frame.width),
+                     reinterpret_cast<const void*>(frame.gpuData[0]),
+                     static_cast<size_t>(frame.gpuLinesize[0]),
+                     static_cast<size_t>(frame.width),
+                     static_cast<size_t>(frame.height),
+                     cudaMemcpyDeviceToDevice);
+    if (yError != cudaSuccess) {
+        SPDLOG_WARN("Failed to copy CUDA Y plane to Vulkan upload buffer: {}",
+                    cudaErrorName(yError));
+        return false;
+    }
+
+    const cudaError_t uvError =
+        cudaMemcpy2D(cudaUvBuffer_.cudaPtr,
+                     static_cast<size_t>(frame.width),
+                     reinterpret_cast<const void*>(frame.gpuData[1]),
+                     static_cast<size_t>(frame.gpuLinesize[1]),
+                     static_cast<size_t>(frame.width),
+                     static_cast<size_t>(frame.height / 2),
+                     cudaMemcpyDeviceToDevice);
+    if (uvError != cudaSuccess) {
+        SPDLOG_WARN("Failed to copy CUDA UV plane to Vulkan upload buffer: {}",
+                    cudaErrorName(uvError));
+        return false;
+    }
+
+    const cudaError_t syncError = cudaDeviceSynchronize();
+    if (syncError != cudaSuccess) {
+        SPDLOG_WARN("Failed to synchronize CUDA upload before Vulkan render: {}",
+                    cudaErrorName(syncError));
+        return false;
+    }
+
+    return true;
+}
+#endif
+
 void VulkanVideoRenderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t imageIndex) {
     VkCommandBufferBeginInfo beginInfo{};
     beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
@@ -1319,10 +1567,8 @@ void VulkanVideoRenderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uin
     transitionImage(commandBuffer, yImage_, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
     transitionImage(commandBuffer, uvImage_, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
 
-    copyBufferToImage(commandBuffer, yImage_, 0);
-    const VkDeviceSize ySize = static_cast<VkDeviceSize>(width_) *
-                               static_cast<VkDeviceSize>(height_);
-    copyBufferToImage(commandBuffer, uvImage_, ySize);
+    copyBufferToImage(commandBuffer, uploadYBuffer_, yImage_, uploadYBufferOffset_);
+    copyBufferToImage(commandBuffer, uploadUvBuffer_, uvImage_, uploadUvBufferOffset_);
 
     transitionImage(commandBuffer, yImage_, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
     transitionImage(commandBuffer, uvImage_, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
@@ -1421,6 +1667,7 @@ void VulkanVideoRenderer::transitionImage(VkCommandBuffer commandBuffer,
 }
 
 void VulkanVideoRenderer::copyBufferToImage(VkCommandBuffer commandBuffer,
+                                            VkBuffer sourceBuffer,
                                             const VulkanImage& image,
                                             VkDeviceSize bufferOffset) {
     VkBufferImageCopy region{};
@@ -1435,7 +1682,7 @@ void VulkanVideoRenderer::copyBufferToImage(VkCommandBuffer commandBuffer,
     region.imageExtent = {image.extent.width, image.extent.height, 1};
 
     vkCmdCopyBufferToImage(commandBuffer,
-                           stagingBuffer_.buffer,
+                           sourceBuffer,
                            image.image,
                            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                            1,
@@ -1637,6 +1884,7 @@ VulkanBuffer VulkanVideoRenderer::createBuffer(VkDeviceSize size,
 
     VkMemoryRequirements requirements{};
     vkGetBufferMemoryRequirements(device_, buffer.buffer, &requirements);
+    buffer.memorySize = requirements.size;
 
     VkMemoryAllocateInfo allocInfo{};
     allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
@@ -1650,6 +1898,76 @@ VulkanBuffer VulkanVideoRenderer::createBuffer(VkDeviceSize size,
 
     return buffer;
 }
+
+#ifdef RTSP_ENABLE_CUDA_INTEROP
+VulkanCudaBuffer VulkanVideoRenderer::createCudaInteropBuffer(VkDeviceSize size) const {
+    VulkanCudaBuffer buffer{};
+    buffer.vulkan.size = size;
+
+    VkExternalMemoryBufferCreateInfo externalBufferInfo{};
+    externalBufferInfo.sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO;
+    externalBufferInfo.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_WIN32_BIT;
+
+    VkBufferCreateInfo bufferInfo{};
+    bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    bufferInfo.pNext = &externalBufferInfo;
+    bufferInfo.size = size;
+    bufferInfo.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+    bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+    checkVk(vkCreateBuffer(device_, &bufferInfo, nullptr, &buffer.vulkan.buffer),
+            "vkCreateBuffer CUDA interop");
+
+    VkMemoryRequirements requirements{};
+    vkGetBufferMemoryRequirements(device_, buffer.vulkan.buffer, &requirements);
+    buffer.vulkan.memorySize = requirements.size;
+
+    VkExportMemoryAllocateInfo exportInfo{};
+    exportInfo.sType = VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO;
+    exportInfo.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_WIN32_BIT;
+
+    VkMemoryAllocateInfo allocInfo{};
+    allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    allocInfo.pNext = &exportInfo;
+    allocInfo.allocationSize = requirements.size;
+    allocInfo.memoryTypeIndex =
+        findMemoryType(requirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+
+    checkVk(vkAllocateMemory(device_, &allocInfo, nullptr, &buffer.vulkan.memory),
+            "vkAllocateMemory CUDA interop");
+    checkVk(vkBindBufferMemory(device_, buffer.vulkan.buffer, buffer.vulkan.memory, 0),
+            "vkBindBufferMemory CUDA interop");
+
+    HANDLE memoryHandle = nullptr;
+    VkMemoryGetWin32HandleInfoKHR handleInfo{};
+    handleInfo.sType = VK_STRUCTURE_TYPE_MEMORY_GET_WIN32_HANDLE_INFO_KHR;
+    handleInfo.memory = buffer.vulkan.memory;
+    handleInfo.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_WIN32_BIT;
+    checkVk(vkGetMemoryWin32HandleKHR_(device_, &handleInfo, &memoryHandle),
+            "vkGetMemoryWin32HandleKHR");
+
+    cudaExternalMemoryHandleDesc memoryDesc{};
+    memoryDesc.type = cudaExternalMemoryHandleTypeOpaqueWin32;
+    memoryDesc.handle.win32.handle = memoryHandle;
+    memoryDesc.size = static_cast<unsigned long long>(buffer.vulkan.memorySize);
+
+    const cudaError_t importError = cudaImportExternalMemory(&buffer.cudaMemory, &memoryDesc);
+    if (memoryHandle != nullptr) {
+        CloseHandle(memoryHandle);
+    }
+    checkCuda(importError, "cudaImportExternalMemory");
+
+    cudaExternalMemoryBufferDesc bufferDesc{};
+    bufferDesc.offset = 0;
+    bufferDesc.size = static_cast<unsigned long long>(buffer.vulkan.size);
+    checkCuda(cudaExternalMemoryGetMappedBuffer(&buffer.cudaPtr,
+                                                buffer.cudaMemory,
+                                                &bufferDesc),
+              "cudaExternalMemoryGetMappedBuffer");
+
+    return buffer;
+}
+#endif
 
 VulkanImage VulkanVideoRenderer::createImage(uint32_t width,
                                              uint32_t height,

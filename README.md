@@ -20,7 +20,7 @@ renderer: "opengl"
 
 renderer: "vulkan"
 
-第一版 Vulkan 后端支持 CPU NV12 帧上传和 shader 转 RGB，使用 SDL 创建 Vulkan 窗口并保持视频宽高比。截图、录制、滤镜切换、CUDA/Vulkan 零拷贝互操作后续再补。
+Vulkan 后端支持 CPU NV12 帧上传和 shader 转 RGB，使用 SDL 创建 Vulkan 窗口并保持视频宽高比。启用 CUDA 硬解时，Vulkan 会通过 CUDA/Vulkan external memory buffer 在 GPU 侧拷贝 NV12 平面，再拷入现有 Y/UV 采样纹理；截图、录制、滤镜切换后续再补。
 
 启用 NVIDIA NVDEC/CUDA 硬件解码：
 
@@ -30,7 +30,7 @@ hw_decode: "cuda"
 
 OpenGL 会保持视频原始宽高比，窗口比例不匹配时自动居中并显示黑边。
 
-OpenGL 渲染路径使用 NV12 两纹理：Y 平面 + 交错 UV 平面。NV12 更贴近硬件解码输出，避免把 UV 拆成两个纹理后再上传。
+OpenGL 和 Vulkan 渲染路径都使用 NV12 两纹理：Y 平面 + 交错 UV 平面。NV12 更贴近硬件解码输出，避免把 UV 拆成两个纹理后再上传。
 
 RTSP 连接参数：
 

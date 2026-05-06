@@ -276,11 +276,6 @@ int main(int argc, char* argv[]) {
     const std::string rendererBackend = toLower(rendererName);
     const bool usesOpenGlRenderer = rendererBackend == "opengl" || rendererBackend == "gl";
     const bool usesVulkanRenderer = rendererBackend == "vulkan" || rendererBackend == "vk";
-    if (usesVulkanRenderer && toLower(hwDecodeBackend) != "none") {
-        SPDLOG_WARN("Vulkan renderer currently uses CPU NV12 upload; disabling hardware decode backend '{}'",
-                    hwDecodeBackend);
-        hwDecodeBackend = "none";
-    }
 
     SPDLOG_INFO("RTSP URL: {}", rtspUrl);
     SPDLOG_INFO("Renderer backend: {}", rendererName);
@@ -307,7 +302,7 @@ int main(int argc, char* argv[]) {
     auto audioPlayer = std::make_unique<rtsp::AudioPlayer>(audioOptions);
     std::unique_ptr<rtsp::VideoRenderer> renderer;
 #ifdef RTSP_ENABLE_CUDA_INTEROP
-    rtspClient->setHardwareFrameOutput(usesOpenGlRenderer);
+    rtspClient->setHardwareFrameOutput(usesOpenGlRenderer || usesVulkanRenderer);
 #else
     rtspClient->setHardwareFrameOutput(false);
 #endif
