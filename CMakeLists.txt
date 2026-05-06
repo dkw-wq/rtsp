@@ -101,6 +101,8 @@ set(VULKAN_SHADER_OUTPUT_DIR ${CMAKE_BINARY_DIR}/shaders/vulkan)
 set(VULKAN_SHADER_SOURCES
     ${CMAKE_SOURCE_DIR}/shaders/vulkan/video.vert
     ${CMAKE_SOURCE_DIR}/shaders/vulkan/nv12.frag
+    ${CMAKE_SOURCE_DIR}/shaders/vulkan/overlay.vert
+    ${CMAKE_SOURCE_DIR}/shaders/vulkan/overlay.frag
 )
 set(VULKAN_SHADER_OUTPUTS)
 foreach(SHADER_SOURCE ${VULKAN_SHADER_SOURCES})

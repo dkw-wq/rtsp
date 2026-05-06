@@ -22,14 +22,17 @@ extern "C" {
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <iomanip>
 #include <limits>
 #include <memory>
 #include <optional>
 #include <set>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -74,6 +77,59 @@ struct VulkanImage {
     VkExtent2D extent{};
     VkFormat format = VK_FORMAT_UNDEFINED;
 };
+
+struct OverlayPushConstants {
+    float screenSize[2] = {};
+    float padding[2] = {};
+    float color[4] = {};
+};
+
+using Glyph = std::array<uint8_t, 7>;
+
+Glyph glyphFor(char ch) {
+    switch (ch) {
+        case '0': return {0x0E, 0x11, 0x13, 0x15, 0x19, 0x11, 0x0E};
+        case '1': return {0x04, 0x0C, 0x04, 0x04, 0x04, 0x04, 0x0E};
+        case '2': return {0x0E, 0x11, 0x01, 0x02, 0x04, 0x08, 0x1F};
+        case '3': return {0x1E, 0x01, 0x01, 0x0E, 0x01, 0x01, 0x1E};
+        case '4': return {0x02, 0x06, 0x0A, 0x12, 0x1F, 0x02, 0x02};
+        case '5': return {0x1F, 0x10, 0x10, 0x1E, 0x01, 0x01, 0x1E};
+        case '6': return {0x0E, 0x10, 0x10, 0x1E, 0x11, 0x11, 0x0E};
+        case '7': return {0x1F, 0x01, 0x02, 0x04, 0x08, 0x08, 0x08};
+        case '8': return {0x0E, 0x11, 0x11, 0x0E, 0x11, 0x11, 0x0E};
+        case '9': return {0x0E, 0x11, 0x11, 0x0F, 0x01, 0x01, 0x0E};
+        case 'A': return {0x0E, 0x11, 0x11, 0x1F, 0x11, 0x11, 0x11};
+        case 'B': return {0x1E, 0x11, 0x11, 0x1E, 0x11, 0x11, 0x1E};
+        case 'C': return {0x0E, 0x11, 0x10, 0x10, 0x10, 0x11, 0x0E};
+        case 'D': return {0x1E, 0x11, 0x11, 0x11, 0x11, 0x11, 0x1E};
+        case 'E': return {0x1F, 0x10, 0x10, 0x1E, 0x10, 0x10, 0x1F};
+        case 'F': return {0x1F, 0x10, 0x10, 0x1E, 0x10, 0x10, 0x10};
+        case 'G': return {0x0E, 0x11, 0x10, 0x17, 0x11, 0x11, 0x0F};
+        case 'H': return {0x11, 0x11, 0x11, 0x1F, 0x11, 0x11, 0x11};
+        case 'I': return {0x0E, 0x04, 0x04, 0x04, 0x04, 0x04, 0x0E};
+        case 'J': return {0x01, 0x01, 0x01, 0x01, 0x11, 0x11, 0x0E};
+        case 'K': return {0x11, 0x12, 0x14, 0x18, 0x14, 0x12, 0x11};
+        case 'L': return {0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x1F};
+        case 'M': return {0x11, 0x1B, 0x15, 0x15, 0x11, 0x11, 0x11};
+        case 'N': return {0x11, 0x19, 0x15, 0x13, 0x11, 0x11, 0x11};
+        case 'O': return {0x0E, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0E};
+        case 'P': return {0x1E, 0x11, 0x11, 0x1E, 0x10, 0x10, 0x10};
+        case 'Q': return {0x0E, 0x11, 0x11, 0x11, 0x15, 0x12, 0x0D};
+        case 'R': return {0x1E, 0x11, 0x11, 0x1E, 0x14, 0x12, 0x11};
+        case 'S': return {0x0F, 0x10, 0x10, 0x0E, 0x01, 0x01, 0x1E};
+        case 'T': return {0x1F, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04};
+        case 'U': return {0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0E};
+        case 'V': return {0x11, 0x11, 0x11, 0x11, 0x0A, 0x0A, 0x04};
+        case 'W': return {0x11, 0x11, 0x11, 0x15, 0x15, 0x15, 0x0A};
+        case 'X': return {0x11, 0x11, 0x0A, 0x04, 0x0A, 0x11, 0x11};
+        case 'Y': return {0x11, 0x11, 0x0A, 0x04, 0x04, 0x04, 0x04};
+        case 'Z': return {0x1F, 0x01, 0x02, 0x04, 0x08, 0x10, 0x1F};
+        case ':': return {0x00, 0x04, 0x04, 0x00, 0x04, 0x04, 0x00};
+        case '-': return {0x00, 0x00, 0x00, 0x1F, 0x00, 0x00, 0x00};
+        case '.': return {0x00, 0x00, 0x00, 0x00, 0x00, 0x0C, 0x0C};
+        default: return {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
+    }
+}
 
 void checkVk(VkResult result, const char* operation) {
     if (result != VK_SUCCESS) {
@@ -168,6 +224,7 @@ private:
     void createCommandBuffers();
     void createSyncObjects();
     void createOrResizeStagingBuffer(VkDeviceSize size);
+    void createOrResizeOverlayBuffer(VulkanBuffer& buffer, VkDeviceSize size);
 
     void cleanupSwapchain();
     void recreateSwapchain();
@@ -204,6 +261,16 @@ private:
 
     bool handleKeyboardShortcuts();
     VkViewport videoViewport() const;
+    std::array<std::string, 11> makeStatusLines() const;
+    void drawStatusLayout(VkCommandBuffer commandBuffer);
+    void drawText(float x, float y, const std::string& text, float scale);
+    void drawRect(float x, float y, float width, float height);
+    void flushOverlay(VkCommandBuffer commandBuffer,
+                      VulkanBuffer& buffer,
+                      float red,
+                      float green,
+                      float blue,
+                      float alpha);
 
     SDL_Window* window_;
     bool initialized_;
@@ -233,15 +300,19 @@ private:
     VkDescriptorSetLayout descriptorSetLayout_;
     VkPipelineLayout pipelineLayout_;
     VkPipeline graphicsPipeline_;
+    VkPipeline overlayPipeline_;
     VkCommandPool commandPool_;
     std::vector<VkCommandBuffer> commandBuffers_;
 
     VulkanImage yImage_;
     VulkanImage uvImage_;
     VulkanBuffer stagingBuffer_;
+    VulkanBuffer overlayBackgroundBuffer_;
+    VulkanBuffer overlayBuffer_;
     VkSampler textureSampler_;
     VkDescriptorPool descriptorPool_;
     VkDescriptorSet descriptorSet_;
+    std::vector<float> overlayVertices_;
 
     VkSemaphore imageAvailableSemaphore_;
     VkSemaphore renderFinishedSemaphore_;
@@ -274,14 +345,18 @@ VulkanVideoRenderer::VulkanVideoRenderer()
     , descriptorSetLayout_(VK_NULL_HANDLE)
     , pipelineLayout_(VK_NULL_HANDLE)
     , graphicsPipeline_(VK_NULL_HANDLE)
+    , overlayPipeline_(VK_NULL_HANDLE)
     , commandPool_(VK_NULL_HANDLE)
     , commandBuffers_()
     , yImage_()
     , uvImage_()
     , stagingBuffer_()
+    , overlayBackgroundBuffer_()
+    , overlayBuffer_()
     , textureSampler_(VK_NULL_HANDLE)
     , descriptorPool_(VK_NULL_HANDLE)
     , descriptorSet_(VK_NULL_HANDLE)
+    , overlayVertices_()
     , imageAvailableSemaphore_(VK_NULL_HANDLE)
     , renderFinishedSemaphore_(VK_NULL_HANDLE)
     , inFlightFence_(VK_NULL_HANDLE)
@@ -410,6 +485,8 @@ void VulkanVideoRenderer::close() {
     }
 
     destroyBuffer(stagingBuffer_);
+    destroyBuffer(overlayBackgroundBuffer_);
+    destroyBuffer(overlayBuffer_);
     destroyVideoImages();
 
     if (descriptorPool_ != VK_NULL_HANDLE) {
@@ -455,6 +532,7 @@ void VulkanVideoRenderer::close() {
     physicalDevice_ = VK_NULL_HANDLE;
     graphicsQueue_ = VK_NULL_HANDLE;
     presentQueue_ = VK_NULL_HANDLE;
+    overlayVertices_.clear();
 }
 
 int VulkanVideoRenderer::getWidth() const { return width_; }
@@ -688,8 +766,12 @@ void VulkanVideoRenderer::createDescriptorSetLayout() {
 void VulkanVideoRenderer::createGraphicsPipeline() {
     const std::vector<uint32_t> vertShader = loadShader("video.vert.spv");
     const std::vector<uint32_t> fragShader = loadShader("nv12.frag.spv");
+    const std::vector<uint32_t> overlayVertShader = loadShader("overlay.vert.spv");
+    const std::vector<uint32_t> overlayFragShader = loadShader("overlay.frag.spv");
     const VkShaderModule vertModule = createShaderModule(vertShader);
     const VkShaderModule fragModule = createShaderModule(fragShader);
+    const VkShaderModule overlayVertModule = createShaderModule(overlayVertShader);
+    const VkShaderModule overlayFragModule = createShaderModule(overlayFragShader);
 
     VkPipelineShaderStageCreateInfo vertStage{};
     vertStage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
@@ -708,8 +790,43 @@ void VulkanVideoRenderer::createGraphicsPipeline() {
         fragStage
     };
 
+    VkPipelineShaderStageCreateInfo overlayVertStage{};
+    overlayVertStage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    overlayVertStage.stage = VK_SHADER_STAGE_VERTEX_BIT;
+    overlayVertStage.module = overlayVertModule;
+    overlayVertStage.pName = "main";
+
+    VkPipelineShaderStageCreateInfo overlayFragStage{};
+    overlayFragStage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    overlayFragStage.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+    overlayFragStage.module = overlayFragModule;
+    overlayFragStage.pName = "main";
+
+    const std::array<VkPipelineShaderStageCreateInfo, 2> overlayShaderStages = {
+        overlayVertStage,
+        overlayFragStage
+    };
+
     VkPipelineVertexInputStateCreateInfo vertexInput{};
     vertexInput.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+
+    VkVertexInputBindingDescription overlayBinding{};
+    overlayBinding.binding = 0;
+    overlayBinding.stride = sizeof(float) * 2U;
+    overlayBinding.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+
+    VkVertexInputAttributeDescription overlayAttribute{};
+    overlayAttribute.binding = 0;
+    overlayAttribute.location = 0;
+    overlayAttribute.format = VK_FORMAT_R32G32_SFLOAT;
+    overlayAttribute.offset = 0;
+
+    VkPipelineVertexInputStateCreateInfo overlayVertexInput{};
+    overlayVertexInput.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+    overlayVertexInput.vertexBindingDescriptionCount = 1;
+    overlayVertexInput.pVertexBindingDescriptions = &overlayBinding;
+    overlayVertexInput.vertexAttributeDescriptionCount = 1;
+    overlayVertexInput.pVertexAttributeDescriptions = &overlayAttribute;
 
     VkPipelineInputAssemblyStateCreateInfo inputAssembly{};
     inputAssembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
@@ -737,10 +854,22 @@ void VulkanVideoRenderer::createGraphicsPipeline() {
                                           VK_COLOR_COMPONENT_B_BIT |
                                           VK_COLOR_COMPONENT_A_BIT;
 
+    VkPipelineColorBlendAttachmentState overlayColorBlendAttachment = colorBlendAttachment;
+    overlayColorBlendAttachment.blendEnable = VK_TRUE;
+    overlayColorBlendAttachment.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+    overlayColorBlendAttachment.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+    overlayColorBlendAttachment.colorBlendOp = VK_BLEND_OP_ADD;
+    overlayColorBlendAttachment.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+    overlayColorBlendAttachment.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+    overlayColorBlendAttachment.alphaBlendOp = VK_BLEND_OP_ADD;
+
     VkPipelineColorBlendStateCreateInfo colorBlending{};
     colorBlending.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
     colorBlending.attachmentCount = 1;
     colorBlending.pAttachments = &colorBlendAttachment;
+
+    VkPipelineColorBlendStateCreateInfo overlayColorBlending = colorBlending;
+    overlayColorBlending.pAttachments = &overlayColorBlendAttachment;
 
     const std::array<VkDynamicState, 2> dynamicStates = {
         VK_DYNAMIC_STATE_VIEWPORT,
@@ -752,10 +881,18 @@ void VulkanVideoRenderer::createGraphicsPipeline() {
     dynamicState.dynamicStateCount = static_cast<uint32_t>(dynamicStates.size());
     dynamicState.pDynamicStates = dynamicStates.data();
 
+    VkPushConstantRange overlayPushConstantRange{};
+    overlayPushConstantRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT |
+                                          VK_SHADER_STAGE_FRAGMENT_BIT;
+    overlayPushConstantRange.offset = 0;
+    overlayPushConstantRange.size = sizeof(OverlayPushConstants);
+
     VkPipelineLayoutCreateInfo pipelineLayoutInfo{};
     pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
     pipelineLayoutInfo.setLayoutCount = 1;
     pipelineLayoutInfo.pSetLayouts = &descriptorSetLayout_;
+    pipelineLayoutInfo.pushConstantRangeCount = 1;
+    pipelineLayoutInfo.pPushConstantRanges = &overlayPushConstantRange;
 
     checkVk(vkCreatePipelineLayout(device_, &pipelineLayoutInfo, nullptr, &pipelineLayout_),
             "vkCreatePipelineLayout");
@@ -779,6 +916,18 @@ void VulkanVideoRenderer::createGraphicsPipeline() {
                                       nullptr, &graphicsPipeline_),
             "vkCreateGraphicsPipelines");
 
+    VkGraphicsPipelineCreateInfo overlayPipelineInfo = pipelineInfo;
+    overlayPipelineInfo.stageCount = static_cast<uint32_t>(overlayShaderStages.size());
+    overlayPipelineInfo.pStages = overlayShaderStages.data();
+    overlayPipelineInfo.pVertexInputState = &overlayVertexInput;
+    overlayPipelineInfo.pColorBlendState = &overlayColorBlending;
+
+    checkVk(vkCreateGraphicsPipelines(device_, VK_NULL_HANDLE, 1, &overlayPipelineInfo,
+                                      nullptr, &overlayPipeline_),
+            "vkCreateGraphicsPipelines overlay");
+
+    vkDestroyShaderModule(device_, overlayFragModule, nullptr);
+    vkDestroyShaderModule(device_, overlayVertModule, nullptr);
     vkDestroyShaderModule(device_, fragModule, nullptr);
     vkDestroyShaderModule(device_, vertModule, nullptr);
 }
@@ -948,6 +1097,18 @@ void VulkanVideoRenderer::createOrResizeStagingBuffer(VkDeviceSize size) {
                                       VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 }
 
+void VulkanVideoRenderer::createOrResizeOverlayBuffer(VulkanBuffer& buffer, VkDeviceSize size) {
+    if (buffer.buffer != VK_NULL_HANDLE && buffer.size >= size) {
+        return;
+    }
+
+    destroyBuffer(buffer);
+    buffer = createBuffer(size,
+                          VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+                          VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                              VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+}
+
 void VulkanVideoRenderer::cleanupSwapchain() {
     if (device_ == VK_NULL_HANDLE) {
         return;
@@ -969,6 +1130,10 @@ void VulkanVideoRenderer::cleanupSwapchain() {
     if (graphicsPipeline_ != VK_NULL_HANDLE) {
         vkDestroyPipeline(device_, graphicsPipeline_, nullptr);
         graphicsPipeline_ = VK_NULL_HANDLE;
+    }
+    if (overlayPipeline_ != VK_NULL_HANDLE) {
+        vkDestroyPipeline(device_, overlayPipeline_, nullptr);
+        overlayPipeline_ = VK_NULL_HANDLE;
     }
     if (pipelineLayout_ != VK_NULL_HANDLE) {
         vkDestroyPipelineLayout(device_, pipelineLayout_, nullptr);
@@ -1193,6 +1358,8 @@ void VulkanVideoRenderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uin
                             0,
                             nullptr);
     vkCmdDraw(commandBuffer, 3, 1, 0, 0);
+
+    drawStatusLayout(commandBuffer);
     vkCmdEndRenderPass(commandBuffer);
 
     checkVk(vkEndCommandBuffer(commandBuffer), "vkEndCommandBuffer");
@@ -1526,6 +1693,162 @@ VulkanImage VulkanVideoRenderer::createImage(uint32_t width,
             "vkBindImageMemory");
 
     return image;
+}
+
+std::array<std::string, 11> VulkanVideoRenderer::makeStatusLines() const {
+    std::ostringstream fps;
+    fps << "FPS: " << std::fixed << std::setprecision(1) << playbackStats_.fps;
+
+    return {
+        fps.str(),
+        "DECODER: " + playbackStats_.decoderBackend,
+        "HW: " + playbackStats_.hardwareDecodeStatus,
+        "DECODED: " + std::to_string(playbackStats_.decodedFrames),
+        "DROPPED: " + std::to_string(playbackStats_.droppedFrames),
+        "SYNC DROP: " + std::to_string(playbackStats_.syncDroppedFrames),
+        "BUFFER: " + std::to_string(playbackStats_.jitterBufferSize),
+        "LATENCY: " + std::to_string(playbackStats_.latencyMs) + "MS",
+        "AUDIO: " + std::string(playbackStats_.audioActive ? "ON " : "OFF ") +
+            std::to_string(playbackStats_.audioQueueMs) + "MS",
+        "AV DIFF: " + std::to_string(playbackStats_.avSyncDiffMs) + "MS",
+        "RENDERER: VULKAN"
+    };
+}
+
+void VulkanVideoRenderer::drawStatusLayout(VkCommandBuffer commandBuffer) {
+    if (swapchainExtent_.width == 0 || swapchainExtent_.height == 0 ||
+        overlayPipeline_ == VK_NULL_HANDLE) {
+        return;
+    }
+
+    const auto lines = makeStatusLines();
+    const float scale = 2.0F;
+    const float lineHeight = 8.0F * scale;
+    const float left = 10.0F;
+    const float top = 10.0F;
+
+    size_t maxLineLength = 0;
+    for (const std::string& line : lines) {
+        maxLineLength = std::max(maxLineLength, line.size());
+    }
+
+    const float layoutWidth = static_cast<float>(maxLineLength) * 6.0F * scale + 12.0F;
+    const float layoutHeight = 12.0F + lineHeight * static_cast<float>(lines.size());
+
+    VkViewport viewport{};
+    viewport.x = 0.0F;
+    viewport.y = 0.0F;
+    viewport.width = static_cast<float>(swapchainExtent_.width);
+    viewport.height = static_cast<float>(swapchainExtent_.height);
+    viewport.minDepth = 0.0F;
+    viewport.maxDepth = 1.0F;
+
+    VkRect2D scissor{};
+    scissor.offset = {0, 0};
+    scissor.extent = swapchainExtent_;
+
+    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, overlayPipeline_);
+    vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
+    vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
+
+    overlayVertices_.clear();
+    drawRect(left - 6.0F, top - 6.0F, layoutWidth, layoutHeight);
+    flushOverlay(commandBuffer, overlayBackgroundBuffer_, 0.0F, 0.0F, 0.0F, 0.62F);
+
+    overlayVertices_.clear();
+    float y = top;
+    for (const std::string& line : lines) {
+        drawText(left, y, line, scale);
+        y += lineHeight;
+    }
+    flushOverlay(commandBuffer, overlayBuffer_, 0.72F, 1.0F, 0.86F, 1.0F);
+}
+
+void VulkanVideoRenderer::drawText(float x, float y, const std::string& text, float scale) {
+    float cursorX = x;
+    for (char rawCh : text) {
+        const char ch = static_cast<char>(std::toupper(static_cast<unsigned char>(rawCh)));
+        if (ch == ' ') {
+            cursorX += 4.0F * scale;
+            continue;
+        }
+
+        const Glyph glyph = glyphFor(ch);
+        for (size_t row = 0; row < glyph.size(); ++row) {
+            for (int col = 0; col < 5; ++col) {
+                const uint8_t mask = static_cast<uint8_t>(1U << (4 - col));
+                if ((glyph[row] & mask) == 0) {
+                    continue;
+                }
+
+                drawRect(cursorX + static_cast<float>(col) * scale,
+                         y + static_cast<float>(row) * scale,
+                         scale,
+                         scale);
+            }
+        }
+
+        cursorX += 6.0F * scale;
+    }
+}
+
+void VulkanVideoRenderer::drawRect(float x, float y, float width, float height) {
+    const float right = x + width;
+    const float bottom = y + height;
+    const std::array<float, 12> vertices = {
+        x, y,
+        right, y,
+        right, bottom,
+        x, y,
+        right, bottom,
+        x, bottom
+    };
+    overlayVertices_.insert(overlayVertices_.end(), vertices.begin(), vertices.end());
+}
+
+void VulkanVideoRenderer::flushOverlay(VkCommandBuffer commandBuffer,
+                                       VulkanBuffer& buffer,
+                                       float red,
+                                       float green,
+                                       float blue,
+                                       float alpha) {
+    if (overlayVertices_.empty()) {
+        return;
+    }
+
+    const VkDeviceSize vertexBytes =
+        static_cast<VkDeviceSize>(overlayVertices_.size() * sizeof(float));
+    createOrResizeOverlayBuffer(buffer, vertexBytes);
+
+    void* mappedMemory = nullptr;
+    checkVk(vkMapMemory(device_, buffer.memory, 0, vertexBytes, 0, &mappedMemory),
+            "vkMapMemory overlay");
+    std::memcpy(mappedMemory, overlayVertices_.data(), static_cast<size_t>(vertexBytes));
+    vkUnmapMemory(device_, buffer.memory);
+
+    OverlayPushConstants pushConstants{};
+    pushConstants.screenSize[0] = static_cast<float>(swapchainExtent_.width);
+    pushConstants.screenSize[1] = static_cast<float>(swapchainExtent_.height);
+    pushConstants.color[0] = red;
+    pushConstants.color[1] = green;
+    pushConstants.color[2] = blue;
+    pushConstants.color[3] = alpha;
+
+    vkCmdPushConstants(commandBuffer,
+                       pipelineLayout_,
+                       VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                       0,
+                       sizeof(pushConstants),
+                       &pushConstants);
+
+    const VkBuffer vertexBuffers[] = {buffer.buffer};
+    const VkDeviceSize offsets[] = {0};
+    vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffers, offsets);
+    vkCmdDraw(commandBuffer,
+              static_cast<uint32_t>(overlayVertices_.size() / 2U),
+              1,
+              0,
+              0);
 }
 
 bool VulkanVideoRenderer::handleKeyboardShortcuts() {
