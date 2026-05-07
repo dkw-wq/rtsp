@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -21,6 +22,10 @@ struct PlaybackStats {
     bool audioActive = false;
     std::string decoderBackend = "CPU";
     std::string hardwareDecodeStatus = "OFF";
+};
+
+enum class RendererCommand {
+    ToggleRecording
 };
 
 /**
@@ -52,6 +57,13 @@ public:
      * @brief 更新播放状态叠加层数据
      */
     virtual void setPlaybackStats(const PlaybackStats& stats) = 0;
+
+    /**
+     * @brief 设置渲染器快捷键命令回调
+     */
+    virtual void setCommandCallback(std::function<void(RendererCommand)> callback) {
+        (void)callback;
+    }
 
     /**
      * @brief 处理SDL事件

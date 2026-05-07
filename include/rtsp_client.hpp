@@ -96,6 +96,14 @@ public:
     void setHardwareFrameOutput(bool enabled);
 
     /**
+     * @brief 直接 remux RTSP 视频包到 MP4，不经过渲染和重编码
+     */
+    bool startRecording(const std::string& path = "");
+    void stopRecording();
+    bool isRecording() const;
+    std::string recordingPath() const;
+
+    /**
      * @brief 获取当前实际解码后端
      * @return CPU, CUDA
      */

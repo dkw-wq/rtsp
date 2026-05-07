@@ -316,6 +316,17 @@ int main(int argc, char* argv[]) {
         }
         renderer = rtsp::createSdlVideoRenderer();
     }
+    renderer->setCommandCallback([&rtspClient](rtsp::RendererCommand command) {
+        if (command != rtsp::RendererCommand::ToggleRecording) {
+            return;
+        }
+
+        if (rtspClient->isRecording()) {
+            rtspClient->stopRecording();
+        } else {
+            rtspClient->startRecording();
+        }
+    });
 
     // 设置帧回调
     rtspClient->setFrameCallback([&jitterBuffer, &audioPlayer](const std::shared_ptr<rtsp::MediaFrame>& frame) {

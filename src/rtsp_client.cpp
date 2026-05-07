@@ -1,4 +1,5 @@
 #include "rtsp_client.hpp"
+#include "frame_capture.hpp"
 #include "jitter_buffer.hpp"
 #include <spdlog/spdlog.h>
 #include <algorithm>
@@ -302,6 +303,7 @@ public:
 
     void close() {
         stop();
+        stopRecording();
         closeAudioDecoder();
         
         if (codecContext_) {
@@ -382,6 +384,92 @@ public:
 
     void setHardwareFrameOutput(bool enabled) {
         hardwareFrameOutputEnabled_ = enabled;
+    }
+
+    bool startRecording(const std::string& path) {
+        if (formatContext_ == nullptr || videoStream_ < 0) {
+            SPDLOG_WARN("Cannot start recording before RTSP is connected");
+            return false;
+        }
+
+        const std::string outputPath =
+            path.empty() ? makeCapturePath("recording", ".mp4") : path;
+
+        std::lock_guard<std::mutex> lock(recordingMutex_);
+        closeRecordingLocked();
+
+        int ret = avformat_alloc_output_context2(&recordingContext_,
+                                                 nullptr,
+                                                 nullptr,
+                                                 outputPath.c_str());
+        if (ret < 0 || recordingContext_ == nullptr) {
+            SPDLOG_WARN("Failed to create recording output '{}': {}",
+                        outputPath, ffmpegError(ret));
+            closeRecordingLocked();
+            return false;
+        }
+
+        const AVStream* inputStream = formatContext_->streams[videoStream_];
+        AVStream* outputStream = avformat_new_stream(recordingContext_, nullptr);
+        if (outputStream == nullptr) {
+            SPDLOG_WARN("Failed to create recording video stream");
+            closeRecordingLocked();
+            return false;
+        }
+
+        ret = avcodec_parameters_copy(outputStream->codecpar, inputStream->codecpar);
+        if (ret < 0) {
+            SPDLOG_WARN("Failed to copy recording codec parameters: {}", ffmpegError(ret));
+            closeRecordingLocked();
+            return false;
+        }
+        outputStream->codecpar->codec_tag = 0;
+        outputStream->time_base = inputStream->time_base;
+
+        if ((recordingContext_->oformat->flags & AVFMT_NOFILE) == 0) {
+            ret = avio_open(&recordingContext_->pb, outputPath.c_str(), AVIO_FLAG_WRITE);
+            if (ret < 0) {
+                SPDLOG_WARN("Failed to open recording file '{}': {}",
+                            outputPath, ffmpegError(ret));
+                closeRecordingLocked();
+                return false;
+            }
+        }
+
+        ret = avformat_write_header(recordingContext_, nullptr);
+        if (ret < 0) {
+            SPDLOG_WARN("Failed to write recording header: {}", ffmpegError(ret));
+            closeRecordingLocked();
+            return false;
+        }
+
+        recordingPath_ = outputPath;
+        recordingInputStream_ = videoStream_;
+        recordingOutputStream_ = outputStream->index;
+        recordingInputTimeBase_ = inputStream->time_base;
+        recordingOutputTimeBase_ = outputStream->time_base;
+        recordingBasePts_ = AV_NOPTS_VALUE;
+        recordingBaseDts_ = AV_NOPTS_VALUE;
+        recordingHeaderWritten_ = true;
+        recordingWaitingForKeyframe_ = true;
+
+        SPDLOG_INFO("RTSP remux recording started: {}", recordingPath_);
+        return true;
+    }
+
+    void stopRecording() {
+        std::lock_guard<std::mutex> lock(recordingMutex_);
+        closeRecordingLocked();
+    }
+
+    bool isRecording() const {
+        std::lock_guard<std::mutex> lock(recordingMutex_);
+        return recordingContext_ != nullptr && recordingHeaderWritten_;
+    }
+
+    std::string recordingPath() const {
+        std::lock_guard<std::mutex> lock(recordingMutex_);
+        return recordingPath_;
     }
 
     std::string getDecodeBackend() const {
@@ -686,6 +774,102 @@ private:
             audioPacketQueue_.pop();
             av_packet_free(&packet);
         }
+    }
+
+    void writeRecordingPacket(const AVPacket* packet) {
+        std::lock_guard<std::mutex> lock(recordingMutex_);
+        if (recordingContext_ == nullptr ||
+            !recordingHeaderWritten_ ||
+            packet->stream_index != recordingInputStream_) {
+            return;
+        }
+
+        if (recordingWaitingForKeyframe_) {
+            if ((packet->flags & AV_PKT_FLAG_KEY) == 0) {
+                return;
+            }
+            recordingWaitingForKeyframe_ = false;
+            recordingBasePts_ = packet->pts != AV_NOPTS_VALUE ? packet->pts : packet->dts;
+            recordingBaseDts_ = packet->dts != AV_NOPTS_VALUE ? packet->dts : recordingBasePts_;
+            if (recordingBasePts_ == AV_NOPTS_VALUE) {
+                recordingBasePts_ = 0;
+            }
+            if (recordingBaseDts_ == AV_NOPTS_VALUE) {
+                recordingBaseDts_ = recordingBasePts_;
+            }
+            SPDLOG_INFO("Recording first keyframe received");
+        }
+
+        AVPacket* outputPacket = av_packet_alloc();
+        if (outputPacket == nullptr) {
+            SPDLOG_WARN("Failed to allocate recording packet");
+            closeRecordingLocked();
+            return;
+        }
+
+        int ret = av_packet_ref(outputPacket, packet);
+        if (ret < 0) {
+            SPDLOG_WARN("Failed to reference recording packet: {}", ffmpegError(ret));
+            av_packet_free(&outputPacket);
+            closeRecordingLocked();
+            return;
+        }
+
+        if (outputPacket->pts != AV_NOPTS_VALUE) {
+            outputPacket->pts -= recordingBasePts_;
+        }
+        if (outputPacket->dts != AV_NOPTS_VALUE) {
+            outputPacket->dts -= recordingBaseDts_;
+        }
+        if (outputPacket->pts != AV_NOPTS_VALUE && outputPacket->pts < 0) {
+            outputPacket->pts = 0;
+        }
+        if (outputPacket->dts != AV_NOPTS_VALUE && outputPacket->dts < 0) {
+            outputPacket->dts = 0;
+        }
+
+        av_packet_rescale_ts(outputPacket,
+                             recordingInputTimeBase_,
+                             recordingOutputTimeBase_);
+        outputPacket->stream_index = recordingOutputStream_;
+        outputPacket->pos = -1;
+
+        ret = av_interleaved_write_frame(recordingContext_, outputPacket);
+        av_packet_free(&outputPacket);
+        if (ret < 0) {
+            SPDLOG_WARN("Failed to write recording packet: {}", ffmpegError(ret));
+            closeRecordingLocked();
+        }
+    }
+
+    void closeRecordingLocked() {
+        if (recordingContext_ != nullptr && recordingHeaderWritten_) {
+            const int ret = av_write_trailer(recordingContext_);
+            if (ret < 0) {
+                SPDLOG_WARN("Failed to finalize recording '{}': {}",
+                            recordingPath_, ffmpegError(ret));
+            } else if (!recordingPath_.empty()) {
+                SPDLOG_INFO("RTSP remux recording saved: {}", recordingPath_);
+            }
+        }
+
+        if (recordingContext_ != nullptr) {
+            if ((recordingContext_->oformat->flags & AVFMT_NOFILE) == 0 &&
+                recordingContext_->pb != nullptr) {
+                avio_closep(&recordingContext_->pb);
+            }
+            avformat_free_context(recordingContext_);
+            recordingContext_ = nullptr;
+        }
+
+        recordingInputStream_ = -1;
+        recordingOutputStream_ = -1;
+        recordingInputTimeBase_ = AVRational{0, 1};
+        recordingOutputTimeBase_ = AVRational{0, 1};
+        recordingBasePts_ = AV_NOPTS_VALUE;
+        recordingBaseDts_ = AV_NOPTS_VALUE;
+        recordingHeaderWritten_ = false;
+        recordingWaitingForKeyframe_ = false;
     }
 
     void audioDecodeLoop() {
@@ -1105,6 +1289,8 @@ private:
                     SPDLOG_INFO("Video keyframe acquired; starting audio/video decode");
                 }
 
+                writeRecordingPacket(packet);
+
                 // 发送数据包到解码器
                 ret = avcodec_send_packet(codecContext_, packet);
                 if (ret < 0) {
@@ -1214,6 +1400,7 @@ private:
     std::mutex audioMutex_;
     std::condition_variable audioCv_;
     std::queue<AVPacket*> audioPacketQueue_;
+    mutable std::mutex recordingMutex_;
     FrameCallback frameCallback_;
     ErrorCallback errorCallback_;
 
@@ -1243,6 +1430,16 @@ private:
     bool waitingForVideoKeyframe_;
     bool videoStarted_;
     std::chrono::steady_clock::time_point openDeadline_;
+    AVFormatContext* recordingContext_ = nullptr;
+    std::string recordingPath_;
+    int recordingInputStream_ = -1;
+    int recordingOutputStream_ = -1;
+    AVRational recordingInputTimeBase_{0, 1};
+    AVRational recordingOutputTimeBase_{0, 1};
+    int64_t recordingBasePts_ = AV_NOPTS_VALUE;
+    int64_t recordingBaseDts_ = AV_NOPTS_VALUE;
+    bool recordingHeaderWritten_ = false;
+    bool recordingWaitingForKeyframe_ = false;
 };
 
 // RtspClient implementation
@@ -1288,6 +1485,22 @@ void RtspClient::setHardwareDecode(const std::string& backend) {
 
 void RtspClient::setHardwareFrameOutput(bool enabled) {
     pImpl_->setHardwareFrameOutput(enabled);
+}
+
+bool RtspClient::startRecording(const std::string& path) {
+    return pImpl_->startRecording(path);
+}
+
+void RtspClient::stopRecording() {
+    pImpl_->stopRecording();
+}
+
+bool RtspClient::isRecording() const {
+    return pImpl_->isRecording();
+}
+
+std::string RtspClient::recordingPath() const {
+    return pImpl_->recordingPath();
 }
 
 std::string RtspClient::getDecodeBackend() const {

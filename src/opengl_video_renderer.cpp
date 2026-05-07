@@ -629,7 +629,7 @@ OpenGlVideoRenderer::OpenGlVideoRenderer(const std::vector<std::string>& filterN
     , playbackStats_()
     , recorder_()
     , screenshotRequested_(false)
-    , recordingFps_(30)
+    , recordingFps_(15)
     , fKeyDown_(false)
     , sKeyDown_(false)
     , rKeyDown_(false)
@@ -1266,7 +1266,7 @@ void OpenGlVideoRenderer::toggleRecording() {
         return;
     }
 
-    const std::string path = makeCapturePath("recording", ".avi");
+    const std::string path = makeCapturePath("recording", ".mp4");
     if (!recorder_.start(path, drawableWidth, drawableHeight, recordingFps_)) {
         SPDLOG_WARN("Failed to start recording: {}", path);
     }

@@ -83,7 +83,7 @@ SdlVideoRenderer::SdlVideoRenderer()
     , height_(0)
     , initialized_(false)
     , screenshotRequested_(false)
-    , recordingFps_(30)
+    , recordingFps_(15)
     , recorder_()
     , fKeyDown_(false)
     , sKeyDown_(false)
@@ -366,7 +366,7 @@ void SdlVideoRenderer::toggleRecording() {
         return;
     }
 
-    const std::string path = makeCapturePath("recording", ".avi");
+    const std::string path = makeCapturePath("recording", ".mp4");
     if (!recorder_.start(path, frame.width, frame.height, recordingFps_)) {
         SPDLOG_WARN("Failed to start recording: {}", path);
     }

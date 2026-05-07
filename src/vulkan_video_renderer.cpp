@@ -290,6 +290,7 @@ public:
     bool initialize(int width, int height, const std::string& title) override;
     bool render(const std::shared_ptr<MediaFrame>& frame) override;
     void setPlaybackStats(const PlaybackStats& stats) override;
+    void setCommandCallback(std::function<void(RendererCommand)> callback) override;
     bool handleEvents() override;
     void close() override;
 
@@ -383,9 +384,8 @@ private:
     bool readCapturedFrame(RgbFrame& frame) const;
     void handleCaptureAfterRender();
     void saveScreenshot(const RgbFrame& frame);
-    void toggleRecording();
     VkViewport videoViewport() const;
-    std::array<std::string, 14> makeStatusLines() const;
+    std::array<std::string, 13> makeStatusLines() const;
     void drawStatusLayout(VkCommandBuffer commandBuffer);
     void drawText(float x, float y, const std::string& text, float scale);
     void drawRect(float x, float y, float width, float height);
@@ -404,8 +404,8 @@ private:
     bool rKeyDown_;
     bool screenshotRequested_;
     bool captureThisFrame_;
+    bool capturePending_;
     bool swapchainTransferSrcSupported_;
-    int recordingFps_;
     ShaderFilter filterMode_;
 
     int width_;
@@ -460,7 +460,7 @@ private:
     VkSampler textureSampler_;
     VkDescriptorPool descriptorPool_;
     VkDescriptorSet descriptorSet_;
-    RgbVideoRecorder recorder_;
+    std::function<void(RendererCommand)> commandCallback_;
     std::vector<float> overlayVertices_;
 
     VkSemaphore imageAvailableSemaphore_;
@@ -477,8 +477,8 @@ VulkanVideoRenderer::VulkanVideoRenderer()
     , rKeyDown_(false)
     , screenshotRequested_(false)
     , captureThisFrame_(false)
+    , capturePending_(false)
     , swapchainTransferSrcSupported_(false)
-    , recordingFps_(30)
     , filterMode_(ShaderFilter::None)
     , width_(0)
     , height_(0)
@@ -529,7 +529,7 @@ VulkanVideoRenderer::VulkanVideoRenderer()
     , textureSampler_(VK_NULL_HANDLE)
     , descriptorPool_(VK_NULL_HANDLE)
     , descriptorSet_(VK_NULL_HANDLE)
-    , recorder_()
+    , commandCallback_()
     , overlayVertices_()
     , imageAvailableSemaphore_(VK_NULL_HANDLE)
     , renderFinishedSemaphore_(VK_NULL_HANDLE)
@@ -614,6 +614,10 @@ void VulkanVideoRenderer::setPlaybackStats(const PlaybackStats& stats) {
     playbackStats_ = stats;
 }
 
+void VulkanVideoRenderer::setCommandCallback(std::function<void(RendererCommand)> callback) {
+    commandCallback_ = std::move(callback);
+}
+
 bool VulkanVideoRenderer::handleEvents() {
     SDL_PumpEvents();
 
@@ -645,9 +649,17 @@ bool VulkanVideoRenderer::handleEvents() {
 }
 
 void VulkanVideoRenderer::close() {
-    recorder_.stop();
+    if (device_ != VK_NULL_HANDLE) {
+        vkDeviceWaitIdle(device_);
+        if (capturePending_) {
+            handleCaptureAfterRender();
+            capturePending_ = false;
+        }
+    }
+
     screenshotRequested_ = false;
     captureThisFrame_ = false;
+    capturePending_ = false;
 
     if (device_ != VK_NULL_HANDLE) {
         vkDeviceWaitIdle(device_);
@@ -912,7 +924,7 @@ void VulkanVideoRenderer::createSwapchain() {
     if (swapchainTransferSrcSupported_) {
         createInfo.imageUsage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
     } else {
-        SPDLOG_WARN("Vulkan swapchain does not support TRANSFER_SRC; screenshots and recording are disabled");
+        SPDLOG_WARN("Vulkan swapchain does not support TRANSFER_SRC; screenshots are disabled");
     }
 
     if (indices.graphicsFamily != indices.presentFamily) {
@@ -1633,6 +1645,10 @@ bool VulkanVideoRenderer::renderNv12(const MediaFrame& frame) {
         checkVk(vkWaitForFences(device_, 1, &inFlightFence_, VK_TRUE,
                                 std::numeric_limits<uint64_t>::max()),
                 "vkWaitForFences");
+        if (capturePending_) {
+            handleCaptureAfterRender();
+            capturePending_ = false;
+        }
 #ifdef RTSP_ENABLE_CUDA_INTEROP
         pendingCudaUploadFrameRef_.reset();
 #endif
@@ -1730,10 +1746,7 @@ bool VulkanVideoRenderer::submitUploadedFrame() {
                 "vkQueueSubmit");
 
         if (captureThisFrame_) {
-            checkVk(vkWaitForFences(device_, 1, &inFlightFence_, VK_TRUE,
-                                    std::numeric_limits<uint64_t>::max()),
-                    "vkWaitForFences capture");
-            handleCaptureAfterRender();
+            capturePending_ = true;
             captureThisFrame_ = false;
         }
 
@@ -1783,6 +1796,10 @@ bool VulkanVideoRenderer::renderCudaNv12(const MediaFrame& frame) {
         checkVk(vkWaitForFences(device_, 1, &inFlightFence_, VK_TRUE,
                                 std::numeric_limits<uint64_t>::max()),
                 "vkWaitForFences");
+        if (capturePending_) {
+            handleCaptureAfterRender();
+            capturePending_ = false;
+        }
         pendingCudaUploadFrameRef_.reset();
 
         if (frame.width != width_ || frame.height != height_) {
@@ -2504,7 +2521,7 @@ VulkanImage VulkanVideoRenderer::createImage(uint32_t width,
     return image;
 }
 
-std::array<std::string, 14> VulkanVideoRenderer::makeStatusLines() const {
+std::array<std::string, 13> VulkanVideoRenderer::makeStatusLines() const {
     std::ostringstream fps;
     fps << "FPS: " << std::fixed << std::setprecision(1) << playbackStats_.fps;
 
@@ -2522,7 +2539,6 @@ std::array<std::string, 14> VulkanVideoRenderer::makeStatusLines() const {
             std::to_string(playbackStats_.audioQueueMs) + "MS",
         "AV DIFF: " + std::to_string(playbackStats_.avSyncDiffMs) + "MS",
         "FILTER: " + std::string(filterName(filterMode_)),
-        recorder_.isRecording() ? "REC: ON" : "REC: OFF",
         "RENDERER: VULKAN"
     };
 }
@@ -2665,13 +2681,13 @@ void VulkanVideoRenderer::flushOverlay(VkCommandBuffer commandBuffer,
 
 bool VulkanVideoRenderer::captureNeeded() const {
     return swapchainTransferSrcSupported_ &&
-           (screenshotRequested_ || recorder_.wantsFrame()) &&
+           screenshotRequested_ &&
            swapchainExtent_.width > 0 &&
            swapchainExtent_.height > 0;
 }
 
 bool VulkanVideoRenderer::readCapturedFrame(RgbFrame& frame) const {
-    if (!captureThisFrame_ || readbackBuffer_.memory == VK_NULL_HANDLE ||
+    if (!capturePending_ || readbackBuffer_.memory == VK_NULL_HANDLE ||
         swapchainExtent_.width == 0 || swapchainExtent_.height == 0) {
         return false;
     }
@@ -2726,11 +2742,6 @@ void VulkanVideoRenderer::handleCaptureAfterRender() {
         saveScreenshot(frame);
         screenshotRequested_ = false;
     }
-
-    if (recorder_.isRecording() && !recorder_.recordFrame(std::move(frame))) {
-        SPDLOG_WARN("Stopping recording after Vulkan frame write failure");
-        recorder_.stop();
-    }
 }
 
 void VulkanVideoRenderer::saveScreenshot(const RgbFrame& frame) {
@@ -2739,31 +2750,6 @@ void VulkanVideoRenderer::saveScreenshot(const RgbFrame& frame) {
         SPDLOG_INFO("Screenshot saved: {}", path);
     } else {
         SPDLOG_WARN("Failed to save screenshot: {}", path);
-    }
-}
-
-void VulkanVideoRenderer::toggleRecording() {
-    if (recorder_.isRecording()) {
-        recorder_.stop();
-        return;
-    }
-
-    if (!swapchainTransferSrcSupported_) {
-        SPDLOG_WARN("Cannot record because this Vulkan swapchain does not support image readback");
-        return;
-    }
-
-    if (swapchainExtent_.width == 0 || swapchainExtent_.height == 0) {
-        SPDLOG_WARN("Cannot start recording before the first Vulkan frame is rendered");
-        return;
-    }
-
-    const std::string path = makeCapturePath("recording", ".avi");
-    if (!recorder_.start(path,
-                         static_cast<int>(swapchainExtent_.width),
-                         static_cast<int>(swapchainExtent_.height),
-                         recordingFps_)) {
-        SPDLOG_WARN("Failed to start recording: {}", path);
     }
 }
 
@@ -2790,8 +2776,8 @@ bool VulkanVideoRenderer::handleKeyboardShortcuts() {
         }
     }
 
-    if (keyJustPressed(isKeyDown(SDL_SCANCODE_R, 'R'), rKeyDown_)) {
-        toggleRecording();
+    if (keyJustPressed(isKeyDown(SDL_SCANCODE_R, 'R'), rKeyDown_) && commandCallback_) {
+        commandCallback_(RendererCommand::ToggleRecording);
     }
 
     return true;

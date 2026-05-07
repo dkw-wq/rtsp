@@ -20,6 +20,7 @@
 extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
+#include <libavutil/dict.h>
 #include <libavutil/error.h>
 #include <libavutil/imgutils.h>
 #include <libavutil/opt.h>
@@ -47,6 +48,11 @@ void writeLe32(std::ofstream& output, uint32_t value) {
     output.put(static_cast<char>((value >> 16U) & 0xFFU));
     output.put(static_cast<char>((value >> 24U) & 0xFFU));
 }
+
+struct EncoderCandidate {
+    const char* name;
+    AVCodecID codecId;
+};
 
 } // namespace
 
@@ -170,13 +176,6 @@ public:
             return false;
         }
 
-        const AVCodec* codec = avcodec_find_encoder(AV_CODEC_ID_MJPEG);
-        if (!codec) {
-            SPDLOG_WARN("MJPEG encoder is not available in this FFmpeg build");
-            closeResources();
-            return false;
-        }
-
         stream_ = avformat_new_stream(formatContext_, nullptr);
         if (!stream_) {
             SPDLOG_WARN("Failed to create recorder stream");
@@ -184,30 +183,7 @@ public:
             return false;
         }
 
-        codecContext_ = avcodec_alloc_context3(codec);
-        if (!codecContext_) {
-            SPDLOG_WARN("Failed to allocate recorder codec context");
-            closeResources();
-            return false;
-        }
-
-        codecContext_->codec_id = codec->id;
-        codecContext_->codec_type = AVMEDIA_TYPE_VIDEO;
-        codecContext_->width = width_;
-        codecContext_->height = height_;
-        codecContext_->time_base = AVRational{1, fps_};
-        codecContext_->framerate = AVRational{fps_, 1};
-        codecContext_->pix_fmt = AV_PIX_FMT_YUV420P;
-        codecContext_->color_range = AVCOL_RANGE_JPEG;
-        codecContext_->bit_rate = static_cast<int64_t>(width_) * height_ * fps_ * 3;
-
-        if ((formatContext_->oformat->flags & AVFMT_GLOBALHEADER) != 0) {
-            codecContext_->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
-        }
-
-        ret = avcodec_open2(codecContext_, codec, nullptr);
-        if (ret < 0) {
-            SPDLOG_WARN("Failed to open MJPEG encoder: {}", ffmpegError(ret));
+        if (!openBestEncoder()) {
             closeResources();
             return false;
         }
@@ -438,6 +414,107 @@ private:
         frame_->pts = pts;
 
         return encodeFrame(frame_);
+    }
+
+    bool openBestEncoder() {
+        const std::string muxerName =
+            formatContext_->oformat && formatContext_->oformat->name
+                ? formatContext_->oformat->name
+                : "";
+        const bool mp4Output = muxerName.find("mp4") != std::string::npos;
+        const std::array<EncoderCandidate, 5> candidates = {{
+            {"h264_nvenc", AV_CODEC_ID_H264},
+            {"h264_mf", AV_CODEC_ID_H264},
+            {"libx264", AV_CODEC_ID_H264},
+            {"mpeg4", AV_CODEC_ID_MPEG4},
+            {mp4Output ? nullptr : "mjpeg",
+             mp4Output ? AV_CODEC_ID_NONE : AV_CODEC_ID_MJPEG}
+        }};
+
+        for (const EncoderCandidate& candidate : candidates) {
+            if (candidate.codecId == AV_CODEC_ID_NONE) {
+                continue;
+            }
+
+            const AVCodec* codec = nullptr;
+            if (candidate.name) {
+                codec = avcodec_find_encoder_by_name(candidate.name);
+            } else {
+                codec = avcodec_find_encoder(candidate.codecId);
+            }
+            if (!codec) {
+                continue;
+            }
+
+            AVCodecContext* nextContext = avcodec_alloc_context3(codec);
+            if (!nextContext) {
+                SPDLOG_WARN("Failed to allocate recorder codec context");
+                return false;
+            }
+
+            nextContext->codec_id = codec->id;
+            nextContext->codec_type = AVMEDIA_TYPE_VIDEO;
+            nextContext->width = width_;
+            nextContext->height = height_;
+            nextContext->time_base = AVRational{1, fps_};
+            nextContext->framerate = AVRational{fps_, 1};
+            nextContext->pix_fmt = AV_PIX_FMT_YUV420P;
+            nextContext->gop_size = std::max(fps_, 1);
+            nextContext->max_b_frames = 0;
+            nextContext->bit_rate = targetBitRate(codec->id);
+            nextContext->color_range =
+                codec->id == AV_CODEC_ID_MJPEG ? AVCOL_RANGE_JPEG : AVCOL_RANGE_MPEG;
+
+            if ((formatContext_->oformat->flags & AVFMT_GLOBALHEADER) != 0) {
+                nextContext->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
+            }
+
+            AVDictionary* options = nullptr;
+            applyEncoderOptions(codec->name, codec->id, &options);
+            const int ret = avcodec_open2(nextContext, codec, &options);
+            av_dict_free(&options);
+            if (ret < 0) {
+                SPDLOG_WARN("Failed to open recorder encoder '{}': {}",
+                            codec->name, ffmpegError(ret));
+                avcodec_free_context(&nextContext);
+                continue;
+            }
+
+            codecContext_ = nextContext;
+            SPDLOG_INFO("Recording encoder: {}", codec->name);
+            return true;
+        }
+
+        SPDLOG_WARN("No suitable video recorder encoder is available");
+        return false;
+    }
+
+    int64_t targetBitRate(AVCodecID codecId) const {
+        if (codecId == AV_CODEC_ID_MJPEG) {
+            return static_cast<int64_t>(width_) * height_ * fps_ * 3;
+        }
+
+        const int64_t pixels = static_cast<int64_t>(width_) * height_;
+        return std::clamp(pixels * 4LL, 2'000'000LL, 16'000'000LL);
+    }
+
+    void applyEncoderOptions(const char* encoderName,
+                             AVCodecID codecId,
+                             AVDictionary** options) const {
+        const std::string name = encoderName ? encoderName : "";
+        if (name == "h264_nvenc") {
+            av_dict_set(options, "preset", "p1", 0);
+            av_dict_set(options, "tune", "ull", 0);
+            av_dict_set(options, "delay", "0", 0);
+        } else if (name == "h264_mf") {
+            av_dict_set(options, "rate_control", "cbr", 0);
+        } else if (name == "libx264") {
+            av_dict_set(options, "preset", "ultrafast", 0);
+            av_dict_set(options, "tune", "zerolatency", 0);
+            av_dict_set(options, "crf", "24", 0);
+        } else if (codecId == AV_CODEC_ID_MPEG4) {
+            av_dict_set(options, "qscale", "5", 0);
+        }
     }
 
     bool encodeFrame(AVFrame* frame) {

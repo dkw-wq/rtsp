@@ -88,6 +88,9 @@ reconnect:
   initial_delay_ms: 1000
   max_delay_ms: 5000
 
+只重新构建：
+
+.\scripts\build.ps1 -SkipConfigure
 
 启动时传真实 RTSP 地址：
 
