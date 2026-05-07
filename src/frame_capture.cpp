@@ -5,12 +5,17 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <condition_variable>
 #include <cstdint>
+#include <deque>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
+#include <mutex>
 #include <sstream>
 #include <string>
+#include <thread>
+#include <utility>
 
 extern "C" {
 #include <libavcodec/avcodec.h>
@@ -259,12 +264,36 @@ public:
             return false;
         }
 
-        frameIndex_ = 0;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            queuedFrames_.clear();
+            recording_ = true;
+            stopping_ = false;
+            firstFrameQueued_ = false;
+            firstFrameTime_ = Clock::time_point{};
+            lastQueuedPts_ = -1;
+            droppedFrames_ = 0;
+            maxQueuedFrames_ = static_cast<size_t>(std::max(fps_ * 2, 30));
+        }
+
+        worker_ = std::thread(&Impl::workerLoop, this);
         SPDLOG_INFO("Recording started: {}", path_);
         return true;
     }
 
     void stop() {
+        const bool hadResources = formatContext_ != nullptr;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            recording_ = false;
+            stopping_ = true;
+        }
+        queueCondition_.notify_one();
+
+        if (worker_.joinable()) {
+            worker_.join();
+        }
+
         if (formatContext_ && headerWritten_) {
             encodeFrame(nullptr);
             const int ret = av_write_trailer(formatContext_);
@@ -276,10 +305,18 @@ public:
         }
 
         closeResources();
+
+        if (hadResources && droppedFrames_ > 0) {
+            SPDLOG_INFO("Recording dropped {} frame(s) while the encoder was behind",
+                        droppedFrames_);
+        }
     }
 
-    bool recordFrame(const RgbFrame& frame) {
-        if (!isRecording()) {
+    bool recordFrame(RgbFrame frame) {
+        const auto now = Clock::now();
+
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!recording_) {
             return false;
         }
 
@@ -296,6 +333,98 @@ public:
             return false;
         }
 
+        int64_t pts = 0;
+        if (!firstFrameQueued_) {
+            firstFrameQueued_ = true;
+            firstFrameTime_ = now;
+        } else {
+            const auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
+                now - firstFrameTime_);
+            pts = (elapsed.count() * static_cast<int64_t>(fps_)) / 1'000'000LL;
+            if (pts <= lastQueuedPts_) {
+                return true;
+            }
+        }
+
+        while (queuedFrames_.size() >= maxQueuedFrames_) {
+            queuedFrames_.pop_front();
+            ++droppedFrames_;
+            if (droppedFrames_ == 1 || (fps_ > 0 && droppedFrames_ % (fps_ * 10) == 0)) {
+                SPDLOG_WARN("Recorder encoder is behind; dropping queued frames");
+            }
+        }
+
+        lastQueuedPts_ = pts;
+        queuedFrames_.push_back(QueuedFrame{std::move(frame), pts});
+        queueCondition_.notify_one();
+        return true;
+    }
+
+    bool isRecording() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return recording_;
+    }
+
+    bool wantsFrame() const {
+        const auto now = Clock::now();
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!recording_) {
+            return false;
+        }
+        if (!firstFrameQueued_) {
+            return true;
+        }
+
+        const auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
+            now - firstFrameTime_);
+        const int64_t pts =
+            (elapsed.count() * static_cast<int64_t>(fps_)) / 1'000'000LL;
+        return pts > lastQueuedPts_;
+    }
+
+    const std::string& outputPath() const {
+        return path_;
+    }
+
+private:
+    using Clock = std::chrono::steady_clock;
+
+    struct QueuedFrame {
+        RgbFrame frame;
+        int64_t pts = 0;
+    };
+
+    void workerLoop() {
+        for (;;) {
+            QueuedFrame queuedFrame;
+            {
+                std::unique_lock<std::mutex> lock(mutex_);
+                queueCondition_.wait(lock, [this]() {
+                    return stopping_ || !queuedFrames_.empty();
+                });
+
+                if (queuedFrames_.empty()) {
+                    if (stopping_) {
+                        break;
+                    }
+                    continue;
+                }
+
+                queuedFrame = std::move(queuedFrames_.front());
+                queuedFrames_.pop_front();
+            }
+
+            if (!encodeRgbFrame(queuedFrame.frame, queuedFrame.pts)) {
+                std::lock_guard<std::mutex> lock(mutex_);
+                recording_ = false;
+                stopping_ = true;
+                queuedFrames_.clear();
+                break;
+            }
+        }
+    }
+
+    bool encodeRgbFrame(const RgbFrame& frame, int64_t pts) {
         const int ret = av_frame_make_writable(frame_);
         if (ret < 0) {
             SPDLOG_WARN("Recorder frame is not writable: {}", ffmpegError(ret));
@@ -306,20 +435,11 @@ public:
         const int sourceLinesize[4] = {width_ * 3, 0, 0, 0};
         sws_scale(swsContext_, sourceData, sourceLinesize, 0, height_,
                   frame_->data, frame_->linesize);
-        frame_->pts = frameIndex_++;
+        frame_->pts = pts;
 
         return encodeFrame(frame_);
     }
 
-    bool isRecording() const {
-        return formatContext_ != nullptr && codecContext_ != nullptr && headerWritten_;
-    }
-
-    const std::string& outputPath() const {
-        return path_;
-    }
-
-private:
     bool encodeFrame(AVFrame* frame) {
         int ret = avcodec_send_frame(codecContext_, frame);
         if (ret < 0) {
@@ -374,7 +494,6 @@ private:
 
         stream_ = nullptr;
         headerWritten_ = false;
-        frameIndex_ = 0;
         width_ = 0;
         height_ = 0;
         fps_ = 0;
@@ -390,8 +509,18 @@ private:
     int width_ = 0;
     int height_ = 0;
     int fps_ = 0;
-    int64_t frameIndex_ = 0;
     bool headerWritten_ = false;
+    mutable std::mutex mutex_;
+    std::condition_variable queueCondition_;
+    std::deque<QueuedFrame> queuedFrames_;
+    std::thread worker_;
+    Clock::time_point firstFrameTime_{};
+    size_t maxQueuedFrames_ = 0;
+    int64_t lastQueuedPts_ = -1;
+    int64_t droppedFrames_ = 0;
+    bool recording_ = false;
+    bool stopping_ = false;
+    bool firstFrameQueued_ = false;
 };
 
 RgbVideoRecorder::RgbVideoRecorder()
@@ -409,11 +538,19 @@ void RgbVideoRecorder::stop() {
 }
 
 bool RgbVideoRecorder::recordFrame(const RgbFrame& frame) {
-    return pImpl_->recordFrame(frame);
+    return pImpl_->recordFrame(RgbFrame(frame));
+}
+
+bool RgbVideoRecorder::recordFrame(RgbFrame&& frame) {
+    return pImpl_->recordFrame(std::move(frame));
 }
 
 bool RgbVideoRecorder::isRecording() const {
     return pImpl_->isRecording();
+}
+
+bool RgbVideoRecorder::wantsFrame() const {
+    return pImpl_->wantsFrame();
 }
 
 const std::string& RgbVideoRecorder::outputPath() const {

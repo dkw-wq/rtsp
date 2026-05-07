@@ -1,3 +1,4 @@
+#include "frame_capture.hpp"
 #include "video_renderer.hpp"
 
 #include <spdlog/spdlog.h>
@@ -106,6 +107,19 @@ struct OverlayPushConstants {
     float color[4] = {};
 };
 
+enum class ShaderFilter : int32_t {
+    None = 0,
+    Grayscale = 1,
+    Warm = 2,
+    Invert = 3,
+    Contrast = 4,
+    Saturation = 5
+};
+
+struct VideoPushConstants {
+    int32_t filterMode = 0;
+};
+
 using Glyph = std::array<uint8_t, 7>;
 
 Glyph glyphFor(char ch) {
@@ -172,6 +186,36 @@ void copyPlane(uint8_t* dst, int dstStride, const uint8_t* src,
     for (int row = 0; row < height; ++row) {
         std::memcpy(dst + row * dstStride, src + row * srcStride, width);
     }
+}
+
+const char* filterName(ShaderFilter filterMode) {
+    switch (filterMode) {
+        case ShaderFilter::Grayscale: return "grayscale";
+        case ShaderFilter::Warm: return "warm";
+        case ShaderFilter::Invert: return "invert";
+        case ShaderFilter::Contrast: return "contrast";
+        case ShaderFilter::Saturation: return "saturation";
+        case ShaderFilter::None:
+        default:
+            return "none";
+    }
+}
+
+bool isKeyDown(SDL_Scancode scancode, int windowsVirtualKey) {
+    const uint8_t* keys = SDL_GetKeyboardState(nullptr);
+    bool down = keys != nullptr && keys[scancode] != 0;
+#ifdef _WIN32
+    down = down || ((GetAsyncKeyState(windowsVirtualKey) & 0x8000) != 0);
+#else
+    (void)windowsVirtualKey;
+#endif
+    return down;
+}
+
+bool keyJustPressed(bool currentDown, bool& previousDown) {
+    const bool pressed = currentDown && !previousDown;
+    previousDown = currentDown;
+    return pressed;
 }
 
 #ifdef RTSP_ENABLE_CUDA_INTEROP
@@ -273,6 +317,7 @@ private:
     void createCommandBuffers();
     void createSyncObjects();
     void createOrResizeStagingBuffer(VkDeviceSize size);
+    void createOrResizeReadbackBuffer(VkDeviceSize size);
     void createOrResizeOverlayBuffer(VulkanBuffer& buffer, VkDeviceSize size);
 #ifdef RTSP_ENABLE_CUDA_INTEROP
     void createOrResizeCudaUploadBuffers(int width, int height);
@@ -306,6 +351,11 @@ private:
                            VkBuffer sourceBuffer,
                            const VulkanImage& image,
                            VkDeviceSize bufferOffset);
+    void transitionSwapchainImage(VkCommandBuffer commandBuffer,
+                                  VkImage image,
+                                  VkImageLayout oldLayout,
+                                  VkImageLayout newLayout);
+    void copySwapchainImageToBuffer(VkCommandBuffer commandBuffer, VkImage image);
 
     QueueFamilyIndices findQueueFamilies(VkPhysicalDevice device) const;
     bool isDeviceSuitable(VkPhysicalDevice device) const;
@@ -329,8 +379,13 @@ private:
                             VkImageUsageFlags usage) const;
 
     bool handleKeyboardShortcuts();
+    bool captureNeeded() const;
+    bool readCapturedFrame(RgbFrame& frame) const;
+    void handleCaptureAfterRender();
+    void saveScreenshot(const RgbFrame& frame);
+    void toggleRecording();
     VkViewport videoViewport() const;
-    std::array<std::string, 12> makeStatusLines() const;
+    std::array<std::string, 14> makeStatusLines() const;
     void drawStatusLayout(VkCommandBuffer commandBuffer);
     void drawText(float x, float y, const std::string& text, float scale);
     void drawRect(float x, float y, float width, float height);
@@ -347,6 +402,11 @@ private:
     bool fKeyDown_;
     bool sKeyDown_;
     bool rKeyDown_;
+    bool screenshotRequested_;
+    bool captureThisFrame_;
+    bool swapchainTransferSrcSupported_;
+    int recordingFps_;
+    ShaderFilter filterMode_;
 
     int width_;
     int height_;
@@ -377,6 +437,7 @@ private:
     VulkanImage yImage_;
     VulkanImage uvImage_;
     VulkanBuffer stagingBuffer_;
+    VulkanBuffer readbackBuffer_;
 #ifdef RTSP_ENABLE_CUDA_INTEROP
     VulkanCudaBuffer cudaYBuffer_;
     VulkanCudaBuffer cudaUvBuffer_;
@@ -399,6 +460,7 @@ private:
     VkSampler textureSampler_;
     VkDescriptorPool descriptorPool_;
     VkDescriptorSet descriptorSet_;
+    RgbVideoRecorder recorder_;
     std::vector<float> overlayVertices_;
 
     VkSemaphore imageAvailableSemaphore_;
@@ -413,6 +475,11 @@ VulkanVideoRenderer::VulkanVideoRenderer()
     , fKeyDown_(false)
     , sKeyDown_(false)
     , rKeyDown_(false)
+    , screenshotRequested_(false)
+    , captureThisFrame_(false)
+    , swapchainTransferSrcSupported_(false)
+    , recordingFps_(30)
+    , filterMode_(ShaderFilter::None)
     , width_(0)
     , height_(0)
     , playbackStats_()
@@ -439,6 +506,7 @@ VulkanVideoRenderer::VulkanVideoRenderer()
     , yImage_()
     , uvImage_()
     , stagingBuffer_()
+    , readbackBuffer_()
 #ifdef RTSP_ENABLE_CUDA_INTEROP
     , cudaYBuffer_()
     , cudaUvBuffer_()
@@ -461,6 +529,7 @@ VulkanVideoRenderer::VulkanVideoRenderer()
     , textureSampler_(VK_NULL_HANDLE)
     , descriptorPool_(VK_NULL_HANDLE)
     , descriptorSet_(VK_NULL_HANDLE)
+    , recorder_()
     , overlayVertices_()
     , imageAvailableSemaphore_(VK_NULL_HANDLE)
     , renderFinishedSemaphore_(VK_NULL_HANDLE)
@@ -576,6 +645,10 @@ bool VulkanVideoRenderer::handleEvents() {
 }
 
 void VulkanVideoRenderer::close() {
+    recorder_.stop();
+    screenshotRequested_ = false;
+    captureThisFrame_ = false;
+
     if (device_ != VK_NULL_HANDLE) {
         vkDeviceWaitIdle(device_);
     }
@@ -596,6 +669,7 @@ void VulkanVideoRenderer::close() {
     }
 
     destroyBuffer(stagingBuffer_);
+    destroyBuffer(readbackBuffer_);
 #ifdef RTSP_ENABLE_CUDA_INTEROP
     destroyCudaUploadSemaphore();
     destroyCudaBuffer(cudaYBuffer_);
@@ -646,6 +720,8 @@ void VulkanVideoRenderer::close() {
     width_ = 0;
     height_ = 0;
     uploadPath_ = "CPU-STAGING";
+    swapchainTransferSrcSupported_ = false;
+    filterMode_ = ShaderFilter::None;
     physicalDevice_ = VK_NULL_HANDLE;
     graphicsQueue_ = VK_NULL_HANDLE;
     presentQueue_ = VK_NULL_HANDLE;
@@ -831,6 +907,13 @@ void VulkanVideoRenderer::createSwapchain() {
     createInfo.imageExtent = extent;
     createInfo.imageArrayLayers = 1;
     createInfo.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+    swapchainTransferSrcSupported_ =
+        (support.capabilities.supportedUsageFlags & VK_IMAGE_USAGE_TRANSFER_SRC_BIT) != 0;
+    if (swapchainTransferSrcSupported_) {
+        createInfo.imageUsage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+    } else {
+        SPDLOG_WARN("Vulkan swapchain does not support TRANSFER_SRC; screenshots and recording are disabled");
+    }
 
     if (indices.graphicsFamily != indices.presentFamily) {
         createInfo.imageSharingMode = VK_SHARING_MODE_CONCURRENT;
@@ -1258,6 +1341,18 @@ void VulkanVideoRenderer::createOrResizeStagingBuffer(VkDeviceSize size) {
                                        VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 }
 
+void VulkanVideoRenderer::createOrResizeReadbackBuffer(VkDeviceSize size) {
+    if (readbackBuffer_.buffer != VK_NULL_HANDLE && readbackBuffer_.size >= size) {
+        return;
+    }
+
+    destroyBuffer(readbackBuffer_);
+    readbackBuffer_ = createBuffer(size,
+                                   VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                                   VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                                       VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+}
+
 #ifdef RTSP_ENABLE_CUDA_INTEROP
 void VulkanVideoRenderer::createOrResizeCudaUploadBuffers(int width, int height) {
     const VkDeviceSize ySize = static_cast<VkDeviceSize>(width) *
@@ -1598,6 +1693,13 @@ bool VulkanVideoRenderer::submitUploadedFrame() {
 
         checkVk(vkResetFences(device_, 1, &inFlightFence_), "vkResetFences");
         checkVk(vkResetCommandBuffer(commandBuffers_[imageIndex], 0), "vkResetCommandBuffer");
+        captureThisFrame_ = captureNeeded();
+        if (captureThisFrame_) {
+            const VkDeviceSize readbackSize =
+                static_cast<VkDeviceSize>(swapchainExtent_.width) *
+                static_cast<VkDeviceSize>(swapchainExtent_.height) * 4U;
+            createOrResizeReadbackBuffer(readbackSize);
+        }
         recordCommandBuffer(commandBuffers_[imageIndex], imageIndex);
 
         std::array<VkSemaphore, 2> waitSemaphores = {imageAvailableSemaphore_, VK_NULL_HANDLE};
@@ -1626,6 +1728,14 @@ bool VulkanVideoRenderer::submitUploadedFrame() {
 
         checkVk(vkQueueSubmit(graphicsQueue_, 1, &submitInfo, inFlightFence_),
                 "vkQueueSubmit");
+
+        if (captureThisFrame_) {
+            checkVk(vkWaitForFences(device_, 1, &inFlightFence_, VK_TRUE,
+                                    std::numeric_limits<uint64_t>::max()),
+                    "vkWaitForFences capture");
+            handleCaptureAfterRender();
+            captureThisFrame_ = false;
+        }
 
         VkPresentInfoKHR presentInfo{};
         presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
@@ -1898,10 +2008,30 @@ void VulkanVideoRenderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uin
                             &descriptorSet_,
                             0,
                             nullptr);
+    VideoPushConstants videoPushConstants{};
+    videoPushConstants.filterMode = static_cast<int32_t>(filterMode_);
+    vkCmdPushConstants(commandBuffer,
+                       pipelineLayout_,
+                       VK_SHADER_STAGE_FRAGMENT_BIT,
+                       0,
+                       sizeof(videoPushConstants),
+                       &videoPushConstants);
     vkCmdDraw(commandBuffer, 3, 1, 0, 0);
 
     drawStatusLayout(commandBuffer);
     vkCmdEndRenderPass(commandBuffer);
+
+    if (captureThisFrame_) {
+        transitionSwapchainImage(commandBuffer,
+                                 swapchainImages_[imageIndex],
+                                 VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+                                 VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+        copySwapchainImageToBuffer(commandBuffer, swapchainImages_[imageIndex]);
+        transitionSwapchainImage(commandBuffer,
+                                 swapchainImages_[imageIndex],
+                                 VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                                 VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
+    }
 
     checkVk(vkEndCommandBuffer(commandBuffer), "vkEndCommandBuffer");
 }
@@ -1980,6 +2110,72 @@ void VulkanVideoRenderer::copyBufferToImage(VkCommandBuffer commandBuffer,
                            sourceBuffer,
                            image.image,
                            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                           1,
+                           &region);
+}
+
+void VulkanVideoRenderer::transitionSwapchainImage(VkCommandBuffer commandBuffer,
+                                                   VkImage image,
+                                                   VkImageLayout oldLayout,
+                                                   VkImageLayout newLayout) {
+    VkImageMemoryBarrier barrier{};
+    barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    barrier.oldLayout = oldLayout;
+    barrier.newLayout = newLayout;
+    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.image = image;
+    barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    barrier.subresourceRange.baseMipLevel = 0;
+    barrier.subresourceRange.levelCount = 1;
+    barrier.subresourceRange.baseArrayLayer = 0;
+    barrier.subresourceRange.layerCount = 1;
+
+    VkPipelineStageFlags sourceStage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    VkPipelineStageFlags destinationStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+
+    if (oldLayout == VK_IMAGE_LAYOUT_PRESENT_SRC_KHR &&
+        newLayout == VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL) {
+        barrier.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+        barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+    } else if (oldLayout == VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL &&
+               newLayout == VK_IMAGE_LAYOUT_PRESENT_SRC_KHR) {
+        barrier.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+        barrier.dstAccessMask = 0;
+        sourceStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+        destinationStage = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
+    } else {
+        throw std::runtime_error("Unsupported swapchain image layout transition");
+    }
+
+    vkCmdPipelineBarrier(commandBuffer,
+                         sourceStage,
+                         destinationStage,
+                         0,
+                         0,
+                         nullptr,
+                         0,
+                         nullptr,
+                         1,
+                         &barrier);
+}
+
+void VulkanVideoRenderer::copySwapchainImageToBuffer(VkCommandBuffer commandBuffer, VkImage image) {
+    VkBufferImageCopy region{};
+    region.bufferOffset = 0;
+    region.bufferRowLength = 0;
+    region.bufferImageHeight = 0;
+    region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    region.imageSubresource.mipLevel = 0;
+    region.imageSubresource.baseArrayLayer = 0;
+    region.imageSubresource.layerCount = 1;
+    region.imageOffset = {0, 0, 0};
+    region.imageExtent = {swapchainExtent_.width, swapchainExtent_.height, 1};
+
+    vkCmdCopyImageToBuffer(commandBuffer,
+                           image,
+                           VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                           readbackBuffer_.buffer,
                            1,
                            &region);
 }
@@ -2308,7 +2504,7 @@ VulkanImage VulkanVideoRenderer::createImage(uint32_t width,
     return image;
 }
 
-std::array<std::string, 12> VulkanVideoRenderer::makeStatusLines() const {
+std::array<std::string, 14> VulkanVideoRenderer::makeStatusLines() const {
     std::ostringstream fps;
     fps << "FPS: " << std::fixed << std::setprecision(1) << playbackStats_.fps;
 
@@ -2325,6 +2521,8 @@ std::array<std::string, 12> VulkanVideoRenderer::makeStatusLines() const {
         "AUDIO: " + std::string(playbackStats_.audioActive ? "ON " : "OFF ") +
             std::to_string(playbackStats_.audioQueueMs) + "MS",
         "AV DIFF: " + std::to_string(playbackStats_.avSyncDiffMs) + "MS",
+        "FILTER: " + std::string(filterName(filterMode_)),
+        recorder_.isRecording() ? "REC: ON" : "REC: OFF",
         "RENDERER: VULKAN"
     };
 }
@@ -2465,33 +2663,136 @@ void VulkanVideoRenderer::flushOverlay(VkCommandBuffer commandBuffer,
               0);
 }
 
-bool VulkanVideoRenderer::handleKeyboardShortcuts() {
-    const uint8_t* keys = SDL_GetKeyboardState(nullptr);
-    if (!keys) {
-        return true;
-    }
+bool VulkanVideoRenderer::captureNeeded() const {
+    return swapchainTransferSrcSupported_ &&
+           (screenshotRequested_ || recorder_.wantsFrame()) &&
+           swapchainExtent_.width > 0 &&
+           swapchainExtent_.height > 0;
+}
 
-    if (keys[SDL_SCANCODE_ESCAPE] != 0 || keys[SDL_SCANCODE_Q] != 0) {
+bool VulkanVideoRenderer::readCapturedFrame(RgbFrame& frame) const {
+    if (!captureThisFrame_ || readbackBuffer_.memory == VK_NULL_HANDLE ||
+        swapchainExtent_.width == 0 || swapchainExtent_.height == 0) {
         return false;
     }
 
-    const bool fDown = keys[SDL_SCANCODE_F] != 0;
-    if (fDown && !fKeyDown_) {
-        SPDLOG_INFO("Filter switching is not implemented in the first Vulkan renderer version");
-    }
-    fKeyDown_ = fDown;
+    const uint32_t width = swapchainExtent_.width;
+    const uint32_t height = swapchainExtent_.height;
+    const VkDeviceSize byteSize =
+        static_cast<VkDeviceSize>(width) * static_cast<VkDeviceSize>(height) * 4U;
 
-    const bool sDown = keys[SDL_SCANCODE_S] != 0;
-    if (sDown && !sKeyDown_) {
-        SPDLOG_INFO("Screenshots are not implemented in the first Vulkan renderer version");
-    }
-    sKeyDown_ = sDown;
+    void* mappedMemory = nullptr;
+    checkVk(vkMapMemory(device_, readbackBuffer_.memory, 0, byteSize, 0, &mappedMemory),
+            "vkMapMemory readback");
 
-    const bool rDown = keys[SDL_SCANCODE_R] != 0;
-    if (rDown && !rKeyDown_) {
-        SPDLOG_INFO("Recording is not implemented in the first Vulkan renderer version");
+    frame.width = static_cast<int>(width);
+    frame.height = static_cast<int>(height);
+    frame.pixels.resize(static_cast<size_t>(width) * static_cast<size_t>(height) * 3U);
+
+    const auto* source = static_cast<const uint8_t*>(mappedMemory);
+    for (uint32_t row = 0; row < height; ++row) {
+        const uint8_t* sourceRow = source + static_cast<size_t>(row) * static_cast<size_t>(width) * 4U;
+        uint8_t* destRow = frame.pixels.data() +
+                           static_cast<size_t>(row) * static_cast<size_t>(width) * 3U;
+        for (uint32_t col = 0; col < width; ++col) {
+            const uint8_t* pixel = sourceRow + static_cast<size_t>(col) * 4U;
+            uint8_t* dest = destRow + static_cast<size_t>(col) * 3U;
+            if (swapchainImageFormat_ == VK_FORMAT_R8G8B8A8_UNORM ||
+                swapchainImageFormat_ == VK_FORMAT_R8G8B8A8_SRGB) {
+                dest[0] = pixel[0];
+                dest[1] = pixel[1];
+                dest[2] = pixel[2];
+            } else {
+                dest[0] = pixel[2];
+                dest[1] = pixel[1];
+                dest[2] = pixel[0];
+            }
+        }
     }
-    rKeyDown_ = rDown;
+
+    vkUnmapMemory(device_, readbackBuffer_.memory);
+    return true;
+}
+
+void VulkanVideoRenderer::handleCaptureAfterRender() {
+    RgbFrame frame;
+    if (!readCapturedFrame(frame)) {
+        SPDLOG_WARN("Failed to capture Vulkan frame");
+        screenshotRequested_ = false;
+        return;
+    }
+
+    if (screenshotRequested_) {
+        saveScreenshot(frame);
+        screenshotRequested_ = false;
+    }
+
+    if (recorder_.isRecording() && !recorder_.recordFrame(std::move(frame))) {
+        SPDLOG_WARN("Stopping recording after Vulkan frame write failure");
+        recorder_.stop();
+    }
+}
+
+void VulkanVideoRenderer::saveScreenshot(const RgbFrame& frame) {
+    const std::string path = makeCapturePath("screenshot", ".bmp");
+    if (saveRgbFrameAsBmp(frame, path)) {
+        SPDLOG_INFO("Screenshot saved: {}", path);
+    } else {
+        SPDLOG_WARN("Failed to save screenshot: {}", path);
+    }
+}
+
+void VulkanVideoRenderer::toggleRecording() {
+    if (recorder_.isRecording()) {
+        recorder_.stop();
+        return;
+    }
+
+    if (!swapchainTransferSrcSupported_) {
+        SPDLOG_WARN("Cannot record because this Vulkan swapchain does not support image readback");
+        return;
+    }
+
+    if (swapchainExtent_.width == 0 || swapchainExtent_.height == 0) {
+        SPDLOG_WARN("Cannot start recording before the first Vulkan frame is rendered");
+        return;
+    }
+
+    const std::string path = makeCapturePath("recording", ".avi");
+    if (!recorder_.start(path,
+                         static_cast<int>(swapchainExtent_.width),
+                         static_cast<int>(swapchainExtent_.height),
+                         recordingFps_)) {
+        SPDLOG_WARN("Failed to start recording: {}", path);
+    }
+}
+
+bool VulkanVideoRenderer::handleKeyboardShortcuts() {
+    SDL_PumpEvents();
+
+    if (isKeyDown(SDL_SCANCODE_ESCAPE, VK_ESCAPE) ||
+        isKeyDown(SDL_SCANCODE_Q, 'Q')) {
+        return false;
+    }
+
+    if (keyJustPressed(isKeyDown(SDL_SCANCODE_F, 'F'), fKeyDown_)) {
+        const int nextMode = (static_cast<int>(filterMode_) + 1) % 6;
+        filterMode_ = static_cast<ShaderFilter>(nextMode);
+        SPDLOG_INFO("Vulkan filter: {}", filterName(filterMode_));
+    }
+
+    if (keyJustPressed(isKeyDown(SDL_SCANCODE_S, 'S'), sKeyDown_)) {
+        if (!swapchainTransferSrcSupported_) {
+            SPDLOG_WARN("Cannot take screenshot because this Vulkan swapchain does not support image readback");
+        } else {
+            screenshotRequested_ = true;
+            SPDLOG_INFO("Screenshot requested");
+        }
+    }
+
+    if (keyJustPressed(isKeyDown(SDL_SCANCODE_R, 'R'), rKeyDown_)) {
+        toggleRecording();
+    }
 
     return true;
 }

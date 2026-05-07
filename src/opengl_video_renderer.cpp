@@ -1216,7 +1216,7 @@ bool OpenGlVideoRenderer::readBackBufferRgb(RgbFrame& frame) const {
 }
 
 void OpenGlVideoRenderer::handleCaptureAfterRender() {
-    if (!screenshotRequested_ && !recorder_.isRecording()) {
+    if (!screenshotRequested_ && !recorder_.wantsFrame()) {
         return;
     }
 
@@ -1232,7 +1232,7 @@ void OpenGlVideoRenderer::handleCaptureAfterRender() {
         screenshotRequested_ = false;
     }
 
-    if (recorder_.isRecording() && !recorder_.recordFrame(frame)) {
+    if (recorder_.isRecording() && !recorder_.recordFrame(std::move(frame))) {
         SPDLOG_WARN("Stopping recording after frame write failure");
         recorder_.stop();
     }

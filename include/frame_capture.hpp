@@ -27,8 +27,10 @@ public:
     bool start(const std::string& path, int width, int height, int fps);
     void stop();
     bool recordFrame(const RgbFrame& frame);
+    bool recordFrame(RgbFrame&& frame);
 
     bool isRecording() const;
+    bool wantsFrame() const;
     const std::string& outputPath() const;
 
 private:

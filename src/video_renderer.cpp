@@ -323,7 +323,7 @@ bool SdlVideoRenderer::readRendererRgb(RgbFrame& frame) const {
 }
 
 void SdlVideoRenderer::handleCaptureAfterRender() {
-    if (!screenshotRequested_ && !recorder_.isRecording()) {
+    if (!screenshotRequested_ && !recorder_.wantsFrame()) {
         return;
     }
 
@@ -339,7 +339,7 @@ void SdlVideoRenderer::handleCaptureAfterRender() {
         screenshotRequested_ = false;
     }
 
-    if (recorder_.isRecording() && !recorder_.recordFrame(frame)) {
+    if (recorder_.isRecording() && !recorder_.recordFrame(std::move(frame))) {
         SPDLOG_WARN("Stopping recording after frame write failure");
         recorder_.stop();
     }

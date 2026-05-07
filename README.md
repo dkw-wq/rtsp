@@ -20,7 +20,7 @@ renderer: "opengl"
 
 renderer: "vulkan"
 
-Vulkan 后端支持 CPU NV12 帧上传和 shader 转 RGB，使用 SDL 创建 Vulkan 窗口并保持视频宽高比。启用 CUDA 硬解时，Vulkan 会通过 CUDA/Vulkan external memory buffer 在 GPU 侧拷贝 NV12 平面，再拷入现有 Y/UV 采样纹理；截图、录制、滤镜切换后续再补。
+Vulkan 后端支持 CPU NV12 帧上传和 shader 转 RGB，使用 SDL 创建 Vulkan 窗口并保持视频宽高比。启用 CUDA 硬解时，Vulkan 会通过 CUDA/Vulkan external memory buffer 在 GPU 侧拷贝 NV12 平面，再拷入现有 Y/UV 采样纹理。Vulkan 也支持截图、录制和运行时滤镜切换。
 
 启用 NVIDIA NVDEC/CUDA 硬件解码：
 
@@ -66,17 +66,17 @@ sync:
 
 视频 jitter buffer 默认 `latency_ms: 30`，音频也保留很短的 `target_latency_ms: 30` 预缓冲；音视频同步逻辑仍然启用。如果想更稳，可以把二者一起调到 `300` 或 `1000`。
 
-OpenGL 滤镜：
+OpenGL 初始滤镜：
 
 opengl_filters:
   - warm
   - contrast
 
-可选值：none, grayscale, warm, invert, contrast, saturation。运行时按 F 可以切换单滤镜预览。
+可选值：none, grayscale, warm, invert, contrast, saturation。OpenGL 和 Vulkan 运行时按 F 都可以切换单滤镜预览。
 
 热键：
 
-- F：切换 OpenGL 单滤镜预览
+- F：切换单滤镜预览
 - S：保存当前最终画面截图到 captures 目录
 - R：开始/停止录制，输出带滤镜的 MJPEG AVI 到 captures 目录
 - ESC/Q：退出
