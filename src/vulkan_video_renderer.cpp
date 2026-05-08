@@ -51,6 +51,7 @@ namespace {
 
 constexpr int kWindowStartX = SDL_WINDOWPOS_CENTERED;
 constexpr int kWindowStartY = SDL_WINDOWPOS_CENTERED;
+constexpr size_t kMaxVideoSlots = 2;
 
 const std::vector<const char*> kDeviceExtensions = {
     VK_KHR_SWAPCHAIN_EXTENSION_NAME,
@@ -289,6 +290,7 @@ public:
 
     bool initialize(int width, int height, const std::string& title) override;
     bool render(const std::shared_ptr<MediaFrame>& frame) override;
+    bool render(const std::vector<std::shared_ptr<MediaFrame>>& frames) override;
     void setPlaybackStats(const PlaybackStats& stats) override;
     void setCommandCallback(std::function<void(RendererCommand)> callback) override;
     bool handleEvents() override;
@@ -310,10 +312,12 @@ private:
     void createGraphicsPipeline();
     void createCommandPool();
     void createVideoImages();
+    void createVideoImagesForSlot(size_t slot, int width, int height);
     void createTextureSampler();
     void createDescriptorPool();
     void createDescriptorSet();
     void updateDescriptorSet();
+    void updateMultiDescriptorSet(size_t slot);
     void createFramebuffers();
     void createCommandBuffers();
     void createSyncObjects();
@@ -337,6 +341,7 @@ private:
     void destroyVideoImages();
 
     bool renderNv12(const MediaFrame& frame);
+    bool renderMultiNv12(const std::vector<std::shared_ptr<MediaFrame>>& frames);
     bool submitUploadedFrame();
 #ifdef RTSP_ENABLE_CUDA_INTEROP
     bool renderCudaNv12(const MediaFrame& frame);
@@ -357,6 +362,8 @@ private:
                                   VkImageLayout oldLayout,
                                   VkImageLayout newLayout);
     void copySwapchainImageToBuffer(VkCommandBuffer commandBuffer, VkImage image);
+    void recordSingleVideo(VkCommandBuffer commandBuffer);
+    void recordMultiVideo(VkCommandBuffer commandBuffer);
 
     QueueFamilyIndices findQueueFamilies(VkPhysicalDevice device) const;
     bool isDeviceSuitable(VkPhysicalDevice device) const;
@@ -385,6 +392,10 @@ private:
     void handleCaptureAfterRender();
     void saveScreenshot(const RgbFrame& frame);
     VkViewport videoViewport() const;
+    VkViewport videoViewportFor(int videoWidth,
+                                int videoHeight,
+                                uint32_t slotIndex,
+                                uint32_t slotCount) const;
     std::array<std::string, 13> makeStatusLines() const;
     void drawStatusLayout(VkCommandBuffer commandBuffer);
     void drawText(float x, float y, const std::string& text, float scale);
@@ -436,6 +447,13 @@ private:
 
     VulkanImage yImage_;
     VulkanImage uvImage_;
+    std::array<VulkanImage, kMaxVideoSlots> multiYImages_;
+    std::array<VulkanImage, kMaxVideoSlots> multiUvImages_;
+    std::array<int, kMaxVideoSlots> multiWidths_;
+    std::array<int, kMaxVideoSlots> multiHeights_;
+    std::array<bool, kMaxVideoSlots> multiReady_;
+    std::array<bool, kMaxVideoSlots> multiUploadPending_;
+    uint32_t activeVideoSlots_;
     VulkanBuffer stagingBuffer_;
     VulkanBuffer readbackBuffer_;
 #ifdef RTSP_ENABLE_CUDA_INTEROP
@@ -457,9 +475,14 @@ private:
     VkBuffer uploadUvBuffer_;
     VkDeviceSize uploadYBufferOffset_;
     VkDeviceSize uploadUvBufferOffset_;
+    std::array<VkBuffer, kMaxVideoSlots> multiUploadYBuffers_;
+    std::array<VkBuffer, kMaxVideoSlots> multiUploadUvBuffers_;
+    std::array<VkDeviceSize, kMaxVideoSlots> multiUploadYBufferOffsets_;
+    std::array<VkDeviceSize, kMaxVideoSlots> multiUploadUvBufferOffsets_;
     VkSampler textureSampler_;
     VkDescriptorPool descriptorPool_;
     VkDescriptorSet descriptorSet_;
+    std::array<VkDescriptorSet, kMaxVideoSlots> multiDescriptorSets_;
     std::function<void(RendererCommand)> commandCallback_;
     std::vector<float> overlayVertices_;
 
@@ -505,6 +528,13 @@ VulkanVideoRenderer::VulkanVideoRenderer()
     , commandBuffers_()
     , yImage_()
     , uvImage_()
+    , multiYImages_()
+    , multiUvImages_()
+    , multiWidths_{}
+    , multiHeights_{}
+    , multiReady_{}
+    , multiUploadPending_{}
+    , activeVideoSlots_(1)
     , stagingBuffer_()
     , readbackBuffer_()
 #ifdef RTSP_ENABLE_CUDA_INTEROP
@@ -526,9 +556,14 @@ VulkanVideoRenderer::VulkanVideoRenderer()
     , uploadUvBuffer_(VK_NULL_HANDLE)
     , uploadYBufferOffset_(0)
     , uploadUvBufferOffset_(0)
+    , multiUploadYBuffers_{}
+    , multiUploadUvBuffers_{}
+    , multiUploadYBufferOffsets_{}
+    , multiUploadUvBufferOffsets_{}
     , textureSampler_(VK_NULL_HANDLE)
     , descriptorPool_(VK_NULL_HANDLE)
     , descriptorSet_(VK_NULL_HANDLE)
+    , multiDescriptorSets_{}
     , commandCallback_()
     , overlayVertices_()
     , imageAvailableSemaphore_(VK_NULL_HANDLE)
@@ -608,6 +643,14 @@ bool VulkanVideoRenderer::render(const std::shared_ptr<MediaFrame>& frame) {
 
     SPDLOG_ERROR("Vulkan renderer expected NV12 or CUDA_NV12 frame");
     return false;
+}
+
+bool VulkanVideoRenderer::render(const std::vector<std::shared_ptr<MediaFrame>>& frames) {
+    if (frames.size() <= 1) {
+        return frames.empty() ? false : render(frames.front());
+    }
+
+    return renderMultiNv12(frames);
 }
 
 void VulkanVideoRenderer::setPlaybackStats(const PlaybackStats& stats) {
@@ -741,6 +784,14 @@ void VulkanVideoRenderer::close() {
     uploadUvBuffer_ = VK_NULL_HANDLE;
     uploadYBufferOffset_ = 0;
     uploadUvBufferOffset_ = 0;
+    multiUploadYBuffers_.fill(VK_NULL_HANDLE);
+    multiUploadUvBuffers_.fill(VK_NULL_HANDLE);
+    multiUploadYBufferOffsets_.fill(0);
+    multiUploadUvBufferOffsets_.fill(0);
+    multiReady_.fill(false);
+    multiUploadPending_.fill(false);
+    activeVideoSlots_ = 1;
+    multiDescriptorSets_.fill(VK_NULL_HANDLE);
 #ifdef RTSP_ENABLE_CUDA_INTEROP
     vkGetMemoryWin32HandleKHR_ = nullptr;
     vkGetSemaphoreWin32HandleKHR_ = nullptr;
@@ -1213,6 +1264,35 @@ void VulkanVideoRenderer::createVideoImages() {
 
     yImage_.view = createImageView(yImage_.image, yImage_.format);
     uvImage_.view = createImageView(uvImage_.image, uvImage_.format);
+
+    for (size_t slot = 0; slot < kMaxVideoSlots; ++slot) {
+        createVideoImagesForSlot(slot, width_, height_);
+    }
+}
+
+void VulkanVideoRenderer::createVideoImagesForSlot(size_t slot, int width, int height) {
+    if (slot >= kMaxVideoSlots || width <= 0 || height <= 0) {
+        return;
+    }
+
+    destroyImage(multiYImages_[slot]);
+    destroyImage(multiUvImages_[slot]);
+
+    multiYImages_[slot] = createImage(static_cast<uint32_t>(width),
+                                      static_cast<uint32_t>(height),
+                                      VK_FORMAT_R8_UNORM,
+                                      VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
+    multiUvImages_[slot] = createImage(static_cast<uint32_t>(width / 2),
+                                       static_cast<uint32_t>(height / 2),
+                                       VK_FORMAT_R8G8_UNORM,
+                                       VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
+
+    multiYImages_[slot].view = createImageView(multiYImages_[slot].image, multiYImages_[slot].format);
+    multiUvImages_[slot].view = createImageView(multiUvImages_[slot].image, multiUvImages_[slot].format);
+    multiWidths_[slot] = width;
+    multiHeights_[slot] = height;
+    multiReady_[slot] = false;
+    multiUploadPending_[slot] = false;
 }
 
 void VulkanVideoRenderer::createTextureSampler() {
@@ -1236,28 +1316,40 @@ void VulkanVideoRenderer::createTextureSampler() {
 void VulkanVideoRenderer::createDescriptorPool() {
     VkDescriptorPoolSize poolSize{};
     poolSize.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    poolSize.descriptorCount = 2;
+    poolSize.descriptorCount = 2 + static_cast<uint32_t>(kMaxVideoSlots) * 2U;
 
     VkDescriptorPoolCreateInfo poolInfo{};
     poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
     poolInfo.poolSizeCount = 1;
     poolInfo.pPoolSizes = &poolSize;
-    poolInfo.maxSets = 1;
+    poolInfo.maxSets = 1 + static_cast<uint32_t>(kMaxVideoSlots);
 
     checkVk(vkCreateDescriptorPool(device_, &poolInfo, nullptr, &descriptorPool_),
             "vkCreateDescriptorPool");
 }
 
 void VulkanVideoRenderer::createDescriptorSet() {
+    std::array<VkDescriptorSetLayout, 1 + kMaxVideoSlots> layouts{};
+    layouts.fill(descriptorSetLayout_);
+
+    std::array<VkDescriptorSet, 1 + kMaxVideoSlots> sets{};
     VkDescriptorSetAllocateInfo allocInfo{};
     allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
     allocInfo.descriptorPool = descriptorPool_;
-    allocInfo.descriptorSetCount = 1;
-    allocInfo.pSetLayouts = &descriptorSetLayout_;
+    allocInfo.descriptorSetCount = static_cast<uint32_t>(sets.size());
+    allocInfo.pSetLayouts = layouts.data();
 
-    checkVk(vkAllocateDescriptorSets(device_, &allocInfo, &descriptorSet_),
+    checkVk(vkAllocateDescriptorSets(device_, &allocInfo, sets.data()),
             "vkAllocateDescriptorSets");
+    descriptorSet_ = sets[0];
+    for (size_t slot = 0; slot < kMaxVideoSlots; ++slot) {
+        multiDescriptorSets_[slot] = sets[slot + 1U];
+    }
+
     updateDescriptorSet();
+    for (size_t slot = 0; slot < kMaxVideoSlots; ++slot) {
+        updateMultiDescriptorSet(slot);
+    }
 }
 
 void VulkanVideoRenderer::updateDescriptorSet() {
@@ -1281,6 +1373,44 @@ void VulkanVideoRenderer::updateDescriptorSet() {
 
     descriptorWrites[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     descriptorWrites[1].dstSet = descriptorSet_;
+    descriptorWrites[1].dstBinding = 1;
+    descriptorWrites[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    descriptorWrites[1].descriptorCount = 1;
+    descriptorWrites[1].pImageInfo = &uvInfo;
+
+    vkUpdateDescriptorSets(device_,
+                           static_cast<uint32_t>(descriptorWrites.size()),
+                           descriptorWrites.data(),
+                           0,
+                           nullptr);
+}
+
+void VulkanVideoRenderer::updateMultiDescriptorSet(size_t slot) {
+    if (slot >= kMaxVideoSlots || multiDescriptorSets_[slot] == VK_NULL_HANDLE ||
+        multiYImages_[slot].view == VK_NULL_HANDLE || multiUvImages_[slot].view == VK_NULL_HANDLE) {
+        return;
+    }
+
+    VkDescriptorImageInfo yInfo{};
+    yInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    yInfo.imageView = multiYImages_[slot].view;
+    yInfo.sampler = textureSampler_;
+
+    VkDescriptorImageInfo uvInfo{};
+    uvInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    uvInfo.imageView = multiUvImages_[slot].view;
+    uvInfo.sampler = textureSampler_;
+
+    std::array<VkWriteDescriptorSet, 2> descriptorWrites{};
+    descriptorWrites[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    descriptorWrites[0].dstSet = multiDescriptorSets_[slot];
+    descriptorWrites[0].dstBinding = 0;
+    descriptorWrites[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    descriptorWrites[0].descriptorCount = 1;
+    descriptorWrites[0].pImageInfo = &yInfo;
+
+    descriptorWrites[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    descriptorWrites[1].dstSet = multiDescriptorSets_[slot];
     descriptorWrites[1].dstBinding = 1;
     descriptorWrites[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     descriptorWrites[1].descriptorCount = 1;
@@ -1623,6 +1753,14 @@ void VulkanVideoRenderer::destroyImage(VulkanImage& image) {
 void VulkanVideoRenderer::destroyVideoImages() {
     destroyImage(yImage_);
     destroyImage(uvImage_);
+    for (size_t slot = 0; slot < kMaxVideoSlots; ++slot) {
+        destroyImage(multiYImages_[slot]);
+        destroyImage(multiUvImages_[slot]);
+        multiWidths_[slot] = 0;
+        multiHeights_[slot] = 0;
+        multiReady_[slot] = false;
+        multiUploadPending_[slot] = false;
+    }
 }
 
 bool VulkanVideoRenderer::renderNv12(const MediaFrame& frame) {
@@ -1673,6 +1811,8 @@ bool VulkanVideoRenderer::renderNv12(const MediaFrame& frame) {
         uploadYBufferOffset_ = 0;
         uploadUvBufferOffset_ = ySize;
         uploadPath_ = "CPU-STAGING";
+        activeVideoSlots_ = 1;
+        multiUploadPending_.fill(false);
 #ifdef RTSP_ENABLE_CUDA_INTEROP
         currentUploadUsesCudaSemaphore_ = false;
 #endif
@@ -1680,6 +1820,118 @@ bool VulkanVideoRenderer::renderNv12(const MediaFrame& frame) {
         return submitUploadedFrame();
     } catch (const std::exception& e) {
         SPDLOG_ERROR("Vulkan render failed: {}", e.what());
+        return false;
+    }
+}
+
+bool VulkanVideoRenderer::renderMultiNv12(const std::vector<std::shared_ptr<MediaFrame>>& frames) {
+    if (!initialized_) {
+        return false;
+    }
+
+    const size_t slotCount = std::min(frames.size(), kMaxVideoSlots);
+    if (slotCount == 0) {
+        return false;
+    }
+
+    VkDeviceSize requiredSize = 0;
+    std::array<VkDeviceSize, kMaxVideoSlots> yOffsets{};
+    std::array<VkDeviceSize, kMaxVideoSlots> uvOffsets{};
+    std::array<VkDeviceSize, kMaxVideoSlots> frameSizes{};
+    std::array<const MediaFrame*, kMaxVideoSlots> uploadFrames{};
+
+    for (size_t slot = 0; slot < slotCount; ++slot) {
+        const auto& frame = frames[slot];
+        multiUploadPending_[slot] = false;
+        if (!frame) {
+            continue;
+        }
+        if (frame->pixelFormat != MediaFrame::PixelFormat::NV12) {
+            SPDLOG_ERROR("Vulkan multi-stream renderer expects CPU NV12 frames");
+            return false;
+        }
+        if (frame->width <= 0 || frame->height <= 0 ||
+            frame->width % 2 != 0 || frame->height % 2 != 0) {
+            SPDLOG_ERROR("Invalid multi-stream NV12 frame dimensions: {}x{}",
+                         frame->width, frame->height);
+            return false;
+        }
+
+        const VkDeviceSize ySize = static_cast<VkDeviceSize>(frame->width) *
+                                   static_cast<VkDeviceSize>(frame->height);
+        const VkDeviceSize frameSize = ySize * 3U / 2U;
+        if (frame->data.size() < static_cast<size_t>(frameSize)) {
+            SPDLOG_ERROR("Multi-stream frame data too small for NV12: {} < {}",
+                         frame->data.size(), static_cast<uint64_t>(frameSize));
+            return false;
+        }
+
+        yOffsets[slot] = requiredSize;
+        uvOffsets[slot] = requiredSize + ySize;
+        frameSizes[slot] = frameSize;
+        uploadFrames[slot] = frame.get();
+        requiredSize += frameSize;
+    }
+
+    if (requiredSize == 0) {
+        return false;
+    }
+
+    try {
+        checkVk(vkWaitForFences(device_, 1, &inFlightFence_, VK_TRUE,
+                                std::numeric_limits<uint64_t>::max()),
+                "vkWaitForFences");
+        if (capturePending_) {
+            handleCaptureAfterRender();
+            capturePending_ = false;
+        }
+#ifdef RTSP_ENABLE_CUDA_INTEROP
+        pendingCudaUploadFrameRef_.reset();
+        currentUploadUsesCudaSemaphore_ = false;
+#endif
+
+        for (size_t slot = 0; slot < slotCount; ++slot) {
+            const MediaFrame* frame = uploadFrames[slot];
+            if (frame == nullptr) {
+                continue;
+            }
+
+            if (multiWidths_[slot] != frame->width ||
+                multiHeights_[slot] != frame->height ||
+                multiYImages_[slot].image == VK_NULL_HANDLE ||
+                multiUvImages_[slot].image == VK_NULL_HANDLE) {
+                createVideoImagesForSlot(slot, frame->width, frame->height);
+                updateMultiDescriptorSet(slot);
+            }
+        }
+
+        createOrResizeStagingBuffer(requiredSize);
+        void* mappedMemory = nullptr;
+        checkVk(vkMapMemory(device_, stagingBuffer_.memory, 0, requiredSize, 0, &mappedMemory),
+                "vkMapMemory multi-stream");
+        auto* mappedBytes = static_cast<uint8_t*>(mappedMemory);
+        for (size_t slot = 0; slot < slotCount; ++slot) {
+            const MediaFrame* frame = uploadFrames[slot];
+            if (frame == nullptr) {
+                continue;
+            }
+            std::memcpy(mappedBytes + yOffsets[slot],
+                        frame->data.data(),
+                        static_cast<size_t>(frameSizes[slot]));
+            multiUploadYBuffers_[slot] = stagingBuffer_.buffer;
+            multiUploadUvBuffers_[slot] = stagingBuffer_.buffer;
+            multiUploadYBufferOffsets_[slot] = yOffsets[slot];
+            multiUploadUvBufferOffsets_[slot] = uvOffsets[slot];
+            multiUploadPending_[slot] = true;
+            multiReady_[slot] = true;
+        }
+        vkUnmapMemory(device_, stagingBuffer_.memory);
+
+        activeVideoSlots_ = static_cast<uint32_t>(slotCount);
+        uploadPath_ = "CPU-STAGING-MULTI";
+        return submitUploadedFrame();
+    } catch (const std::exception& e) {
+        SPDLOG_ERROR("Vulkan multi-stream render failed: {}", e.what());
         return false;
     }
 }
@@ -1835,6 +2087,8 @@ bool VulkanVideoRenderer::renderCudaNv12(const MediaFrame& frame) {
         uploadYBufferOffset_ = 0;
         uploadUvBufferOffset_ = 0;
         uploadPath_ = "CUDA-VK-BUFFER";
+        activeVideoSlots_ = 1;
+        multiUploadPending_.fill(false);
         currentUploadUsesCudaSemaphore_ = true;
 
         return submitUploadedFrame();
@@ -1986,15 +2240,6 @@ void VulkanVideoRenderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uin
     beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     checkVk(vkBeginCommandBuffer(commandBuffer, &beginInfo), "vkBeginCommandBuffer");
 
-    transitionImage(commandBuffer, yImage_, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
-    transitionImage(commandBuffer, uvImage_, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
-
-    copyBufferToImage(commandBuffer, uploadYBuffer_, yImage_, uploadYBufferOffset_);
-    copyBufferToImage(commandBuffer, uploadUvBuffer_, uvImage_, uploadUvBufferOffset_);
-
-    transitionImage(commandBuffer, yImage_, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-    transitionImage(commandBuffer, uvImage_, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-
     VkRenderPassBeginInfo renderPassInfo{};
     renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
     renderPassInfo.renderPass = renderPass_;
@@ -2007,34 +2252,72 @@ void VulkanVideoRenderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uin
     renderPassInfo.clearValueCount = 1;
     renderPassInfo.pClearValues = &clearColor;
 
+    if (activeVideoSlots_ > 1) {
+        recordMultiVideo(commandBuffer);
+    } else {
+        recordSingleVideo(commandBuffer);
+    }
+
     vkCmdBeginRenderPass(commandBuffer, &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipeline_);
+    if (activeVideoSlots_ > 1) {
+        for (uint32_t slot = 0; slot < activeVideoSlots_ && slot < kMaxVideoSlots; ++slot) {
+            if (!multiReady_[slot] || multiDescriptorSets_[slot] == VK_NULL_HANDLE) {
+                continue;
+            }
+            const VkViewport viewport = videoViewportFor(multiWidths_[slot],
+                                                         multiHeights_[slot],
+                                                         slot,
+                                                         activeVideoSlots_);
+            VkRect2D scissor{};
+            scissor.offset = {0, 0};
+            scissor.extent = swapchainExtent_;
+            vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
+            vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
+            vkCmdBindDescriptorSets(commandBuffer,
+                                    VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                    pipelineLayout_,
+                                    0,
+                                    1,
+                                    &multiDescriptorSets_[slot],
+                                    0,
+                                    nullptr);
+            VideoPushConstants videoPushConstants{};
+            videoPushConstants.filterMode = static_cast<int32_t>(filterMode_);
+            vkCmdPushConstants(commandBuffer,
+                               pipelineLayout_,
+                               VK_SHADER_STAGE_FRAGMENT_BIT,
+                               0,
+                               sizeof(videoPushConstants),
+                               &videoPushConstants);
+            vkCmdDraw(commandBuffer, 3, 1, 0, 0);
+        }
+    } else {
+        const VkViewport viewport = videoViewport();
+        VkRect2D scissor{};
+        scissor.offset = {0, 0};
+        scissor.extent = swapchainExtent_;
+        vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
+        vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
 
-    const VkViewport viewport = videoViewport();
-    VkRect2D scissor{};
-    scissor.offset = {0, 0};
-    scissor.extent = swapchainExtent_;
-    vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
-    vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
-
-    vkCmdBindDescriptorSets(commandBuffer,
-                            VK_PIPELINE_BIND_POINT_GRAPHICS,
-                            pipelineLayout_,
-                            0,
-                            1,
-                            &descriptorSet_,
-                            0,
-                            nullptr);
-    VideoPushConstants videoPushConstants{};
-    videoPushConstants.filterMode = static_cast<int32_t>(filterMode_);
-    vkCmdPushConstants(commandBuffer,
-                       pipelineLayout_,
-                       VK_SHADER_STAGE_FRAGMENT_BIT,
-                       0,
-                       sizeof(videoPushConstants),
-                       &videoPushConstants);
-    vkCmdDraw(commandBuffer, 3, 1, 0, 0);
-
+        vkCmdBindDescriptorSets(commandBuffer,
+                                VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                pipelineLayout_,
+                                0,
+                                1,
+                                &descriptorSet_,
+                                0,
+                                nullptr);
+        VideoPushConstants videoPushConstants{};
+        videoPushConstants.filterMode = static_cast<int32_t>(filterMode_);
+        vkCmdPushConstants(commandBuffer,
+                           pipelineLayout_,
+                           VK_SHADER_STAGE_FRAGMENT_BIT,
+                           0,
+                           sizeof(videoPushConstants),
+                           &videoPushConstants);
+        vkCmdDraw(commandBuffer, 3, 1, 0, 0);
+    }
     drawStatusLayout(commandBuffer);
     vkCmdEndRenderPass(commandBuffer);
 
@@ -2051,6 +2334,41 @@ void VulkanVideoRenderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uin
     }
 
     checkVk(vkEndCommandBuffer(commandBuffer), "vkEndCommandBuffer");
+}
+
+void VulkanVideoRenderer::recordSingleVideo(VkCommandBuffer commandBuffer) {
+    transitionImage(commandBuffer, yImage_, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+    transitionImage(commandBuffer, uvImage_, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+
+    copyBufferToImage(commandBuffer, uploadYBuffer_, yImage_, uploadYBufferOffset_);
+    copyBufferToImage(commandBuffer, uploadUvBuffer_, uvImage_, uploadUvBufferOffset_);
+
+    transitionImage(commandBuffer, yImage_, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    transitionImage(commandBuffer, uvImage_, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+}
+
+void VulkanVideoRenderer::recordMultiVideo(VkCommandBuffer commandBuffer) {
+    for (uint32_t slot = 0; slot < activeVideoSlots_ && slot < kMaxVideoSlots; ++slot) {
+        if (!multiUploadPending_[slot]) {
+            continue;
+        }
+
+        transitionImage(commandBuffer, multiYImages_[slot], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+        transitionImage(commandBuffer, multiUvImages_[slot], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+
+        copyBufferToImage(commandBuffer,
+                          multiUploadYBuffers_[slot],
+                          multiYImages_[slot],
+                          multiUploadYBufferOffsets_[slot]);
+        copyBufferToImage(commandBuffer,
+                          multiUploadUvBuffers_[slot],
+                          multiUvImages_[slot],
+                          multiUploadUvBufferOffsets_[slot]);
+
+        transitionImage(commandBuffer, multiYImages_[slot], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        transitionImage(commandBuffer, multiUvImages_[slot], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        multiUploadPending_[slot] = false;
+    }
 }
 
 void VulkanVideoRenderer::transitionImage(VkCommandBuffer commandBuffer,
@@ -2784,22 +3102,34 @@ bool VulkanVideoRenderer::handleKeyboardShortcuts() {
 }
 
 VkViewport VulkanVideoRenderer::videoViewport() const {
+    return videoViewportFor(width_, height_, 0, 1);
+}
+
+VkViewport VulkanVideoRenderer::videoViewportFor(int videoWidth,
+                                                 int videoHeight,
+                                                 uint32_t slotIndex,
+                                                 uint32_t slotCount) const {
     const float surfaceWidth = static_cast<float>(swapchainExtent_.width);
     const float surfaceHeight = static_cast<float>(swapchainExtent_.height);
-    const float videoAspect = static_cast<float>(width_) / static_cast<float>(height_);
-    const float surfaceAspect = surfaceWidth / surfaceHeight;
+    const uint32_t columns = std::max<uint32_t>(slotCount, 1U);
+    const float panelWidth = surfaceWidth / static_cast<float>(columns);
+    const float panelHeight = surfaceHeight;
+    const float panelX = panelWidth * static_cast<float>(std::min(slotIndex, columns - 1U));
 
-    float viewportWidth = surfaceWidth;
-    float viewportHeight = surfaceHeight;
-    float viewportX = 0.0f;
+    const float videoAspect = static_cast<float>(videoWidth) / static_cast<float>(videoHeight);
+    const float panelAspect = panelWidth / panelHeight;
+
+    float viewportWidth = panelWidth;
+    float viewportHeight = panelHeight;
+    float viewportX = panelX;
     float viewportY = 0.0f;
 
-    if (surfaceAspect > videoAspect) {
-        viewportWidth = surfaceHeight * videoAspect;
-        viewportX = (surfaceWidth - viewportWidth) * 0.5f;
+    if (panelAspect > videoAspect) {
+        viewportWidth = panelHeight * videoAspect;
+        viewportX = panelX + (panelWidth - viewportWidth) * 0.5f;
     } else {
-        viewportHeight = surfaceWidth / videoAspect;
-        viewportY = (surfaceHeight - viewportHeight) * 0.5f;
+        viewportHeight = panelWidth / videoAspect;
+        viewportY = (panelHeight - viewportHeight) * 0.5f;
     }
 
     VkViewport viewport{};

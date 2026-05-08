@@ -85,6 +85,12 @@ public:
     void setAudioEnabled(bool enabled);
 
     /**
+     * @brief 启用或关闭视频解码
+     * @note 关闭视频后可用于单独接收音频 RTSP 流。
+     */
+    void setVideoEnabled(bool enabled);
+
+    /**
      * @brief 设置硬件解码后端
      * @param backend none, cuda
      */

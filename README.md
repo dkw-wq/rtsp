@@ -96,6 +96,30 @@ reconnect:
 
 .\build-vcpkg\bin\Release\rtsp_player.exe rtsp://你的摄像头IP:554/你的路径
 
+双路 Vulkan 分屏显示：
+
+```yaml
+renderer: "vulkan"
+rtsp_urls:
+  - "rtsp://第一个摄像头IP:554/你的路径"
+  - "rtsp://第二个摄像头IP:554/你的路径"
+```
+
+也可以直接传两个地址启动：
+
+.\build-vcpkg\bin\Release\rtsp_player.exe rtsp://第一个摄像头IP:554/你的路径 rtsp://第二个摄像头IP:554/你的路径
+
+当前双路首版只取前两个 RTSP 地址，在一个 Vulkan 窗口中左右分屏显示。音频只播放第一路；多路模式会关闭硬件帧直通，让 FFmpeg 输出 CPU NV12 帧给 Vulkan 上传，单路 Vulkan 的 CUDA/Vulkan 快路径仍然保留。
+
+双路本机推流会把音频拆成单独一路，视频 RTSP 只包含 H264：
+
+```yaml
+rtsp_urls:
+  - "rtsp://127.0.0.1:8554/webcam"
+  - "rtsp://127.0.0.1:8554/webcam2"
+audio_rtsp_url: "rtsp://127.0.0.1:8554/audio"
+```
+
 本机摄像头已经配置为 MediaMTX + FFmpeg 推流，MediaMTX 位于：
 
 ..\mediamtx
@@ -107,6 +131,23 @@ reconnect:
 脚本默认会把本机摄像头和内置麦克风推到同一个 RTSP URL。若要关闭音频：
 
 .\scripts\start_webcam_rtsp.ps1 -NoAudio
+
+同时推送内置摄像头和罗技 USB 摄像头：
+
+.\scripts\start_webcam_rtsp.ps1 -Dual
+
+默认会输出：
+
+```yaml
+rtsp_urls:
+  - "rtsp://127.0.0.1:8554/webcam"
+  - "rtsp://127.0.0.1:8554/webcam2"
+audio_rtsp_url: "rtsp://127.0.0.1:8554/audio"
+```
+
+双路推流时两个视频 URL 都只推 H264，音频单独推到 `audio_rtsp_url`。若设备名不同，可以传：
+
+.\scripts\start_webcam_rtsp.ps1 -Dual -SecondCameraName "Logi C270 HD WebCam"
 
 然后运行播放器：
 

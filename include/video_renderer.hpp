@@ -54,6 +54,17 @@ public:
     virtual bool render(const std::shared_ptr<MediaFrame>& frame) = 0;
 
     /**
+     * @brief 渲染多路视频帧
+     * @note 默认后端只渲染第一路；Vulkan 后端会做双路分屏。
+     */
+    virtual bool render(const std::vector<std::shared_ptr<MediaFrame>>& frames) {
+        if (frames.empty()) {
+            return false;
+        }
+        return render(frames.front());
+    }
+
+    /**
      * @brief 更新播放状态叠加层数据
      */
     virtual void setPlaybackStats(const PlaybackStats& stats) = 0;

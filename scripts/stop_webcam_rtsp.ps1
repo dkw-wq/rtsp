@@ -9,6 +9,8 @@ $workspaceRoot = Split-Path -Parent $repoRoot
 $logDir = Join-Path $workspaceRoot "mediamtx\logs"
 $pidFiles = @(
     (Join-Path $logDir "ffmpeg-webcam.pid"),
+    (Join-Path $logDir "ffmpeg-webcam2.pid"),
+    (Join-Path $logDir "ffmpeg-audio.pid"),
     (Join-Path $logDir "mediamtx.pid")
 )
 
@@ -35,7 +37,11 @@ foreach ($process in $mediaMtxProcesses) {
 }
 
 $ffmpegProcesses = Get-CimInstance Win32_Process -Filter "name = 'ffmpeg.exe'" -ErrorAction SilentlyContinue |
-    Where-Object { $_.CommandLine -like "*$RtspUrl*" }
+    Where-Object {
+        $_.CommandLine -like "*$RtspUrl*" -or
+        $_.CommandLine -like "*rtsp://127.0.0.1:8554/webcam2*" -or
+        $_.CommandLine -like "*rtsp://127.0.0.1:8554/audio*"
+    }
 
 foreach ($process in $ffmpegProcesses) {
     Stop-Process -Id $process.ProcessId -Force

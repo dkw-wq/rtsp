@@ -1,10 +1,16 @@
 param(
     [string]$CameraName = "HP True Vision FHD Camera",
+    [string]$SecondCameraName = "Logi C270 HD WebCam",
     [string]$AudioName = "麦克风阵列 (2- 适用于数字麦克风的英特尔® 智音技术)",
     [string]$RtspUrl = "rtsp://127.0.0.1:8554/webcam",
+    [string]$SecondRtspUrl = "rtsp://127.0.0.1:8554/webcam2",
+    [string]$AudioRtspUrl = "rtsp://127.0.0.1:8554/audio",
     [string]$VideoSize = "1280x720",
+    [string]$SecondVideoSize = "",
     [int]$Framerate = 30,
-    [switch]$NoAudio
+    [switch]$Dual,
+    [switch]$NoAudio,
+    [switch]$FfmpegDebug
 )
 
 $ErrorActionPreference = "Stop"
@@ -15,7 +21,15 @@ $mediaMtxDir = Join-Path $workspaceRoot "mediamtx"
 $mediaMtxExe = Join-Path $mediaMtxDir "mediamtx.exe"
 $logDir = Join-Path $mediaMtxDir "logs"
 $mediaMtxPidFile = Join-Path $logDir "mediamtx.pid"
-$ffmpegPidFile = Join-Path $logDir "ffmpeg-webcam.pid"
+$ffmpegPidFiles = @(
+    (Join-Path $logDir "ffmpeg-webcam.pid")
+)
+if ($Dual) {
+    $ffmpegPidFiles += (Join-Path $logDir "ffmpeg-webcam2.pid")
+    if (!$NoAudio -and ![string]::IsNullOrWhiteSpace($AudioName)) {
+        $ffmpegPidFiles += (Join-Path $logDir "ffmpeg-audio.pid")
+    }
+}
 
 New-Item -ItemType Directory -Force -Path $logDir | Out-Null
 
@@ -39,49 +53,178 @@ if (!$mediaMtxProcess) {
     Start-Sleep -Seconds 2
 }
 
-if (Test-Path $ffmpegPidFile) {
-    $oldPid = Get-Content $ffmpegPidFile -ErrorAction SilentlyContinue | Select-Object -First 1
-    if ($oldPid -and (Get-Process -Id $oldPid -ErrorAction SilentlyContinue)) {
-        Write-Host "FFmpeg webcam publisher is already running. RTSP URL: $RtspUrl"
-        exit 0
+foreach ($ffmpegPidFile in $ffmpegPidFiles) {
+    if (Test-Path $ffmpegPidFile) {
+        $oldPid = Get-Content $ffmpegPidFile -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($oldPid -and (Get-Process -Id $oldPid -ErrorAction SilentlyContinue)) {
+            Write-Host "FFmpeg publisher is already running from PID file: $ffmpegPidFile"
+            Write-Host "Run scripts\stop_webcam_rtsp.ps1 before restarting publishers."
+            exit 0
+        }
+        Remove-Item $ffmpegPidFile -Force
     }
 }
 
-$inputName = "video=$CameraName"
-if (!$NoAudio -and ![string]::IsNullOrWhiteSpace($AudioName)) {
-    $inputName = "${inputName}:audio=$AudioName"
+function Start-WebcamPublisher {
+    param(
+        [Parameter(Mandatory = $true)][string]$Name,
+        [Parameter(Mandatory = $true)][string]$Url,
+        [Parameter(Mandatory = $true)][string]$Size,
+        [Parameter(Mandatory = $true)][string]$PidFile,
+        [Parameter(Mandatory = $true)][string]$LogPrefix,
+        [string]$AudioDeviceName = "",
+        [switch]$DisableAudio,
+        [switch]$DebugLog
+    )
+
+    $inputName = "video=$Name"
+    if (!$DisableAudio -and ![string]::IsNullOrWhiteSpace($AudioDeviceName)) {
+        $inputName = "${inputName}:audio=$AudioDeviceName"
+    }
+
+    $audioArgs = if ($DisableAudio -or [string]::IsNullOrWhiteSpace($AudioDeviceName)) {
+        "-an"
+    } else {
+        "-c:a aac -ar 48000 -ac 2 -b:a 128k"
+    }
+
+    $logArgs = if ($DebugLog) {
+        "-hide_banner -stats -stats_period 1 -loglevel info "
+    } else {
+        "-hide_banner -nostats -loglevel warning "
+    }
+
+    $ffmpegArgs = $logArgs +
+        "-f dshow -rtbufsize 100M -video_size $Size -framerate $Framerate -vcodec mjpeg " +
+        "-i `"$inputName`" " +
+        "-c:v libx264 -preset ultrafast -tune zerolatency -g $Framerate -pix_fmt yuv420p " +
+        "$audioArgs " +
+        "-f rtsp -rtsp_transport tcp $Url"
+
+    $ffmpegProcess = Start-Process `
+        -FilePath "ffmpeg" `
+        -ArgumentList $ffmpegArgs `
+        -WorkingDirectory $mediaMtxDir `
+        -RedirectStandardOutput (Join-Path $logDir "$LogPrefix.stdout.log") `
+        -RedirectStandardError (Join-Path $logDir "$LogPrefix.stderr.log") `
+        -WindowStyle Hidden `
+        -PassThru
+
+    Set-Content -Path $PidFile -Value $ffmpegProcess.Id
+    return $ffmpegProcess
 }
 
-$audioArgs = if ($NoAudio -or [string]::IsNullOrWhiteSpace($AudioName)) {
-    "-an"
-} else {
-    "-c:a aac -ar 48000 -ac 2 -b:a 128k"
+function Start-AudioPublisher {
+    param(
+        [Parameter(Mandatory = $true)][string]$Name,
+        [Parameter(Mandatory = $true)][string]$Url,
+        [Parameter(Mandatory = $true)][string]$PidFile,
+        [Parameter(Mandatory = $true)][string]$LogPrefix,
+        [switch]$DebugLog
+    )
+
+    $logArgs = if ($DebugLog) {
+        "-hide_banner -stats -stats_period 1 -loglevel info "
+    } else {
+        "-hide_banner -nostats -loglevel warning "
+    }
+
+    $ffmpegArgs = $logArgs +
+        "-f dshow -rtbufsize 10M " +
+        "-i `"audio=$Name`" " +
+        "-c:a aac -ar 48000 -ac 2 -b:a 128k " +
+        "-f rtsp -rtsp_transport tcp $Url"
+
+    $ffmpegProcess = Start-Process `
+        -FilePath "ffmpeg" `
+        -ArgumentList $ffmpegArgs `
+        -WorkingDirectory $mediaMtxDir `
+        -RedirectStandardOutput (Join-Path $logDir "$LogPrefix.stdout.log") `
+        -RedirectStandardError (Join-Path $logDir "$LogPrefix.stderr.log") `
+        -WindowStyle Hidden `
+        -PassThru
+
+    Set-Content -Path $PidFile -Value $ffmpegProcess.Id
+    return $ffmpegProcess
 }
 
-$ffmpegArgs = "-hide_banner -nostats -loglevel warning " +
-    "-f dshow -rtbufsize 100M -video_size $VideoSize -framerate $Framerate -vcodec mjpeg " +
-    "-i `"$inputName`" " +
-    "-c:v libx264 -preset ultrafast -tune zerolatency -g $Framerate -pix_fmt yuv420p " +
-    "$audioArgs " +
-    "-f rtsp -rtsp_transport tcp $RtspUrl"
+$publishers = @()
+$publishers += @{
+    Process = Start-WebcamPublisher `
+        -Name $CameraName `
+        -Url $RtspUrl `
+        -Size $VideoSize `
+        -PidFile $ffmpegPidFiles[0] `
+        -LogPrefix "ffmpeg-webcam" `
+        -AudioDeviceName $AudioName `
+        -DisableAudio:($NoAudio -or $Dual) `
+        -DebugLog:$FfmpegDebug
+    Url = $RtspUrl
+    Log = Join-Path $logDir "ffmpeg-webcam.stderr.log"
+}
 
-$ffmpegProcess = Start-Process `
-    -FilePath "ffmpeg" `
-    -ArgumentList $ffmpegArgs `
-    -WorkingDirectory $mediaMtxDir `
-    -RedirectStandardOutput (Join-Path $logDir "ffmpeg-webcam.stdout.log") `
-    -RedirectStandardError (Join-Path $logDir "ffmpeg-webcam.stderr.log") `
-    -WindowStyle Hidden `
-    -PassThru
+if ($Dual) {
+    $secondSize = if ([string]::IsNullOrWhiteSpace($SecondVideoSize)) {
+        $VideoSize
+    } else {
+        $SecondVideoSize
+    }
 
-Set-Content -Path $ffmpegPidFile -Value $ffmpegProcess.Id
-Start-Sleep -Seconds 7
+    $publishers += @{
+        Process = Start-WebcamPublisher `
+            -Name $SecondCameraName `
+            -Url $SecondRtspUrl `
+            -Size $secondSize `
+            -PidFile $ffmpegPidFiles[1] `
+            -LogPrefix "ffmpeg-webcam2" `
+            -DisableAudio `
+            -DebugLog:$FfmpegDebug
+        Url = $SecondRtspUrl
+        Log = Join-Path $logDir "ffmpeg-webcam2.stderr.log"
+    }
 
-if ($ffmpegProcess.HasExited) {
-    Get-Content (Join-Path $logDir "ffmpeg-webcam.stderr.log") -ErrorAction SilentlyContinue
-    throw "FFmpeg failed to publish webcam stream."
+    if (!$NoAudio -and ![string]::IsNullOrWhiteSpace($AudioName)) {
+        $publishers += @{
+            Process = Start-AudioPublisher `
+                -Name $AudioName `
+                -Url $AudioRtspUrl `
+                -PidFile (Join-Path $logDir "ffmpeg-audio.pid") `
+                -LogPrefix "ffmpeg-audio" `
+                -DebugLog:$FfmpegDebug
+            Url = $AudioRtspUrl
+            Log = Join-Path $logDir "ffmpeg-audio.stderr.log"
+        }
+    }
+}
+
+Start-Sleep -Seconds 8
+
+foreach ($publisher in $publishers) {
+    if ($publisher.Process.HasExited) {
+        Get-Content $publisher.Log -ErrorAction SilentlyContinue
+        foreach ($startedPublisher in $publishers) {
+            if (!$startedPublisher.Process.HasExited) {
+                Stop-Process -Id $startedPublisher.Process.Id -Force
+            }
+        }
+        foreach ($pidFile in $ffmpegPidFiles) {
+            if (Test-Path $pidFile) {
+                Remove-Item $pidFile -Force
+            }
+        }
+        throw "FFmpeg failed to publish webcam stream: $($publisher.Url)"
+    }
 }
 
 Write-Host "MediaMTX PID: $($mediaMtxProcess.Id)"
-Write-Host "FFmpeg PID: $($ffmpegProcess.Id)"
-Write-Host "RTSP URL: $RtspUrl"
+foreach ($publisher in $publishers) {
+    Write-Host "FFmpeg PID: $($publisher.Process.Id)"
+    Write-Host "RTSP URL: $($publisher.Url)"
+}
+
+if ($Dual) {
+    Write-Host "Player config rtsp_urls:"
+    foreach ($publisher in $publishers) {
+        Write-Host "  - `"$($publisher.Url)`""
+    }
+}

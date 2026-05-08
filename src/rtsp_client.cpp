@@ -122,6 +122,7 @@ public:
         , hwDecodeStatus_("off")
         , hardwareFrameOutputEnabled_(false)
         , audioEnabled_(true)
+        , videoEnabled_(true)
         , connectionOptions_()
         , cudaFrameLayoutLogged_(false)
         , waitingForVideoKeyframe_(true)
@@ -185,101 +186,106 @@ public:
             }
         }
 
-        if (videoStream_ < 0) {
+        if (videoEnabled_ && videoStream_ < 0) {
             SPDLOG_ERROR("No video stream found");
             close();
             return false;
         }
 
-        // 获取编解码器参数
-        AVCodecParameters* codecParams = formatContext_->streams[videoStream_]->codecpar;
-        width_ = codecParams->width;
-        height_ = codecParams->height;
-        videoFrameDurationSeconds_ = streamFrameDurationSeconds();
-        nextSyntheticVideoPtsSeconds_ = 0.0;
-        lastVideoPtsSeconds_ = 0.0;
-        hasLastVideoPts_ = false;
-        waitingForVideoKeyframe_ = true;
-        videoStarted_ = false;
+        if (videoEnabled_) {
+            // 获取编解码器参数
+            AVCodecParameters* codecParams = formatContext_->streams[videoStream_]->codecpar;
+            width_ = codecParams->width;
+            height_ = codecParams->height;
+            videoFrameDurationSeconds_ = streamFrameDurationSeconds();
+            nextSyntheticVideoPtsSeconds_ = 0.0;
+            lastVideoPtsSeconds_ = 0.0;
+            hasLastVideoPts_ = false;
+            waitingForVideoKeyframe_ = true;
+            videoStarted_ = false;
 
-        SPDLOG_INFO("Video: {}x{}, codec: {}, frame_duration={:.3f} ms",
-                    width_, height_,
-                    avcodec_get_name(codecParams->codec_id),
-                    videoFrameDurationSeconds_ * 1000.0);
+            SPDLOG_INFO("Video: {}x{}, codec: {}, frame_duration={:.3f} ms",
+                        width_, height_,
+                        avcodec_get_name(codecParams->codec_id),
+                        videoFrameDurationSeconds_ * 1000.0);
 
-        // 查找解码器
-        const AVCodec* softwareCodec = avcodec_find_decoder(codecParams->codec_id);
-        if (!softwareCodec) {
-            SPDLOG_ERROR("Codec not found");
-            close();
-            return false;
-        }
-
-        const AVCodec* codec = selectDecoder(codecParams->codec_id, softwareCodec);
-        if (codec != softwareCodec) {
-            SPDLOG_INFO("Selected hardware decoder: {}", codec->name);
-        }
-
-        // 创建解码器上下文
-        codecContext_ = avcodec_alloc_context3(codec);
-        if (!codecContext_) {
-            SPDLOG_ERROR("Failed to allocate codec context");
-            close();
-            return false;
-        }
-
-        ret = avcodec_parameters_to_context(codecContext_, codecParams);
-        if (ret < 0) {
-            SPDLOG_ERROR("Failed to copy codec parameters");
-            close();
-            return false;
-        }
-        applyVideoStreamTiming(codecContext_);
-
-        bool hardwareDecodePrepared = prepareHardwareDecoder(codec);
-        if (codec != softwareCodec && !hardwareDecodePrepared) {
-            SPDLOG_WARN("Hardware decoder '{}' could not be prepared. Falling back to software decoder '{}'",
-                        codec->name, softwareCodec->name);
-            codec = softwareCodec;
-            if (codecContext_) {
-                avcodec_free_context(&codecContext_);
-            }
-            codecContext_ = avcodec_alloc_context3(codec);
-            if (!codecContext_) {
-                SPDLOG_ERROR("Failed to allocate fallback software codec context");
+            // 查找解码器
+            const AVCodec* softwareCodec = avcodec_find_decoder(codecParams->codec_id);
+            if (!softwareCodec) {
+                SPDLOG_ERROR("Codec not found");
                 close();
                 return false;
             }
+
+            const AVCodec* codec = selectDecoder(codecParams->codec_id, softwareCodec);
+            if (codec != softwareCodec) {
+                SPDLOG_INFO("Selected hardware decoder: {}", codec->name);
+            }
+
+            // 创建解码器上下文
+            codecContext_ = avcodec_alloc_context3(codec);
+            if (!codecContext_) {
+                SPDLOG_ERROR("Failed to allocate codec context");
+                close();
+                return false;
+            }
+
             ret = avcodec_parameters_to_context(codecContext_, codecParams);
             if (ret < 0) {
-                SPDLOG_ERROR("Failed to copy codec parameters for software fallback: {}", ffmpegError(ret));
+                SPDLOG_ERROR("Failed to copy codec parameters");
                 close();
                 return false;
             }
             applyVideoStreamTiming(codecContext_);
-        }
 
-        // 打开解码器
-        ret = avcodec_open2(codecContext_, codec, nullptr);
-        if (ret < 0) {
-            if (hardwareDecodePrepared) {
-                SPDLOG_WARN("Failed to open codec with {} hardware decode: {}. Falling back to software decode",
-                            hwDecodeBackend_, ffmpegError(ret));
-                if (!recreateSoftwareCodecContext(softwareCodec, codecParams)) {
+            bool hardwareDecodePrepared = prepareHardwareDecoder(codec);
+            if (codec != softwareCodec && !hardwareDecodePrepared) {
+                SPDLOG_WARN("Hardware decoder '{}' could not be prepared. Falling back to software decoder '{}'",
+                            codec->name, softwareCodec->name);
+                codec = softwareCodec;
+                if (codecContext_) {
+                    avcodec_free_context(&codecContext_);
+                }
+                codecContext_ = avcodec_alloc_context3(codec);
+                if (!codecContext_) {
+                    SPDLOG_ERROR("Failed to allocate fallback software codec context");
                     close();
                     return false;
                 }
-            } else {
-                SPDLOG_ERROR("Failed to open codec: {}", ffmpegError(ret));
-                close();
-                return false;
+                ret = avcodec_parameters_to_context(codecContext_, codecParams);
+                if (ret < 0) {
+                    SPDLOG_ERROR("Failed to copy codec parameters for software fallback: {}", ffmpegError(ret));
+                    close();
+                    return false;
+                }
+                applyVideoStreamTiming(codecContext_);
             }
-        }
 
-        if (hwDecodeActive_) {
-            SPDLOG_INFO("Hardware decode active: {}", hwDecodeBackend_);
+            // 打开解码器
+            ret = avcodec_open2(codecContext_, codec, nullptr);
+            if (ret < 0) {
+                if (hardwareDecodePrepared) {
+                    SPDLOG_WARN("Failed to open codec with {} hardware decode: {}. Falling back to software decode",
+                                hwDecodeBackend_, ffmpegError(ret));
+                    if (!recreateSoftwareCodecContext(softwareCodec, codecParams)) {
+                        close();
+                        return false;
+                    }
+                } else {
+                    SPDLOG_ERROR("Failed to open codec: {}", ffmpegError(ret));
+                    close();
+                    return false;
+                }
+            }
+
+            if (hwDecodeActive_) {
+                SPDLOG_INFO("Hardware decode active: {}", hwDecodeBackend_);
+            } else {
+                SPDLOG_INFO("Hardware decode inactive, using software decode");
+            }
         } else {
-            SPDLOG_INFO("Hardware decode inactive, using software decode");
+            SPDLOG_INFO("Video decode disabled");
+            videoStarted_ = true;
         }
 
         if (audioEnabled_ && audioStream_ >= 0) {
@@ -289,6 +295,10 @@ public:
             }
         } else if (audioEnabled_) {
             SPDLOG_INFO("No audio stream found");
+            if (!videoEnabled_) {
+                close();
+                return false;
+            }
         } else {
             SPDLOG_INFO("Audio decode disabled");
         }
@@ -376,6 +386,10 @@ public:
 
     void setAudioEnabled(bool enabled) {
         audioEnabled_ = enabled;
+    }
+
+    void setVideoEnabled(bool enabled) {
+        videoEnabled_ = enabled;
     }
 
     void setHardwareDecode(const std::string& backend) {
@@ -1275,7 +1289,7 @@ private:
 
             lastReadProgress = std::chrono::steady_clock::now();
 
-            if (packet->stream_index == videoStream_) {
+            if (videoEnabled_ && packet->stream_index == videoStream_ && codecContext_ != nullptr) {
                 if (waitingForVideoKeyframe_) {
                     if ((packet->flags & AV_PKT_FLAG_KEY) == 0) {
                         av_packet_unref(packet);
@@ -1375,7 +1389,7 @@ private:
                     }
                 }
             } else if (packet->stream_index == audioStream_ && audioCodecContext_ != nullptr) {
-                if (!videoStarted_) {
+                if (videoEnabled_ && !videoStarted_) {
                     av_packet_unref(packet);
                     continue;
                 }
@@ -1425,6 +1439,7 @@ private:
     std::string hwDecodeStatus_;
     bool hardwareFrameOutputEnabled_;
     bool audioEnabled_;
+    bool videoEnabled_;
     RtspConnectionOptions connectionOptions_;
     mutable bool cudaFrameLayoutLogged_;
     bool waitingForVideoKeyframe_;
@@ -1477,6 +1492,10 @@ void RtspClient::setConnectionOptions(const RtspConnectionOptions& options) {
 
 void RtspClient::setAudioEnabled(bool enabled) {
     pImpl_->setAudioEnabled(enabled);
+}
+
+void RtspClient::setVideoEnabled(bool enabled) {
+    pImpl_->setVideoEnabled(enabled);
 }
 
 void RtspClient::setHardwareDecode(const std::string& backend) {

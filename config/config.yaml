@@ -3,6 +3,14 @@
 # RTSP流地址
 rtsp_url: "rtsp://127.0.0.1:8554/webcam"
 
+# 双路显示时使用前两个地址；启用后会优先于 rtsp_url。
+rtsp_urls:
+  - "rtsp://127.0.0.1:8554/webcam"
+  - "rtsp://127.0.0.1:8554/webcam2"
+
+# 双路显示时音频单独走一路 RTSP，避免拖慢第一路视频。
+audio_rtsp_url: "rtsp://127.0.0.1:8554/audio"
+
 # 视频参数 (通常由RTSP流自动检测，这里仅作默认值)
 width: 1920
 height: 1080
