@@ -41,6 +41,11 @@ std::string ffmpegError(int errorCode) {
     return errbuf;
 }
 
+std::chrono::microseconds steadyNowMicros() {
+    return std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::steady_clock::now().time_since_epoch());
+}
+
 AVPixelFormat normalizeDeprecatedPixelFormat(AVPixelFormat format) {
     switch (format) {
         case AV_PIX_FMT_YUVJ420P:
@@ -935,6 +940,7 @@ private:
 
                 auto mediaFrame = std::make_shared<MediaFrame>();
                 if (fillAudioFrame(audioFrame, *mediaFrame) && frameCallback_) {
+                    mediaFrame->recvTime = steadyNowMicros();
                     frameCallback_(mediaFrame);
                 }
 
@@ -1346,6 +1352,7 @@ private:
                         mediaFrame->ptsSeconds = stableVideoTimestampSeconds(outputFrame);
                         mediaFrame->durationSeconds = videoFrameDurationSeconds_;
                         mediaFrame->keyFrame = (outputFrame->flags & AV_FRAME_FLAG_KEY) != 0;
+                        mediaFrame->recvTime = steadyNowMicros();
 
                         bool mediaFrameReady = false;
                         if (hardwareFrameOutputEnabled_ &&

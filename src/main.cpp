@@ -114,6 +114,7 @@ struct SyncOptions {
     bool enabled = true;
     int maxWaitMs = 16;
     int lateDropMs = 250;
+    int audioOffsetMs = 0;
 };
 
 struct SyncState {
@@ -253,6 +254,9 @@ int main(int argc, char* argv[]) {
             }
             assignNonNegativeInt(syncConfig, "max_wait_ms", syncOptions.maxWaitMs);
             assignPositiveInt(syncConfig, "late_drop_ms", syncOptions.lateDropMs);
+            if (syncConfig["audio_offset_ms"]) {
+                syncOptions.audioOffsetMs = syncConfig["audio_offset_ms"].as<int>();
+            }
         }
         if (config["reconnect"]) {
             const auto reconnectConfig = config["reconnect"];
@@ -319,8 +323,9 @@ int main(int argc, char* argv[]) {
     SPDLOG_INFO("Audio: enabled={}, target_latency_ms={}, max_queue_ms={}, hard_reset_queue_ms={}",
                 audioOptions.enabled, audioOptions.targetLatencyMs,
                 audioOptions.maxQueueMs, audioOptions.hardResetQueueMs);
-    SPDLOG_INFO("A/V sync: enabled={}, max_wait_ms={}, late_drop_ms={}",
-                syncOptions.enabled, syncOptions.maxWaitMs, syncOptions.lateDropMs);
+    SPDLOG_INFO("A/V sync: enabled={}, max_wait_ms={}, late_drop_ms={}, audio_offset_ms={}",
+                syncOptions.enabled, syncOptions.maxWaitMs,
+                syncOptions.lateDropMs, syncOptions.audioOffsetMs);
     SPDLOG_INFO("Reconnect: enabled={}, initial_delay_ms={}, max_delay_ms={}",
                 reconnectEnabled, reconnectInitialDelayMs, reconnectMaxDelayMs);
 
@@ -337,6 +342,7 @@ int main(int argc, char* argv[]) {
         struct MultiStreamState {
             std::unique_ptr<rtsp::RtspClient> client;
             std::unique_ptr<rtsp::JitterBuffer> jitterBuffer;
+            std::shared_ptr<rtsp::MediaFrame> pendingFrame;
             std::shared_ptr<rtsp::MediaFrame> latestFrame;
             rtsp::PlaybackStats stats;
             uint64_t receivedFramesSinceFpsUpdate = 0;
@@ -507,8 +513,17 @@ int main(int argc, char* argv[]) {
                 std::chrono::duration_cast<std::chrono::milliseconds>(now - frameRecvTime).count());
         };
 
+        auto frameTargetTime = [&audioOptions, &syncOptions](
+                                   const std::shared_ptr<rtsp::MediaFrame>& frame) {
+            const int targetDelayMs =
+                std::max(0, audioOptions.targetLatencyMs + syncOptions.audioOffsetMs);
+            const auto frameRecvTime = std::chrono::steady_clock::time_point(frame->recvTime);
+            return frameRecvTime + std::chrono::milliseconds(targetDelayMs);
+        };
+
         while (g_running && renderer->handleEvents()) {
             bool hasNewVideoFrame = false;
+            bool waitingForSync = false;
             for (size_t index = 0; index < streamCount; ++index) {
                 auto& stream = streams[index];
                 if (!stream.client->isRunning()) {
@@ -529,15 +544,69 @@ int main(int argc, char* argv[]) {
                 }
 
                 std::shared_ptr<rtsp::MediaFrame> nextFrame;
-                if (stream.jitterBuffer->pop(nextFrame, index == 0 ? 1 : 0)) {
-                    stream.latestFrame = nextFrame;
-                    hasNewVideoFrame = true;
+                const bool syncOrderedPlayback =
+                    index == 0 && syncOptions.enabled && audioPlayer->hasClock();
+                if (!stream.pendingFrame &&
+                    stream.jitterBuffer->pop(nextFrame, index == 0 ? 1 : 0)) {
+                    stream.pendingFrame = nextFrame;
                     ++stream.receivedFramesSinceFpsUpdate;
-                    while (stream.jitterBuffer->pop(nextFrame, 0)) {
-                        stream.latestFrame = nextFrame;
-                        hasNewVideoFrame = true;
-                        ++stream.receivedFramesSinceFpsUpdate;
+                    if (!syncOrderedPlayback) {
+                        while (stream.jitterBuffer->pop(nextFrame, 0)) {
+                            if (stream.pendingFrame) {
+                                ++stream.stats.syncDroppedFrames;
+                            }
+                            stream.pendingFrame = nextFrame;
+                            ++stream.receivedFramesSinceFpsUpdate;
+                        }
                     }
+                }
+
+                if (stream.pendingFrame) {
+                    if (index == 0 && syncOptions.enabled && audioPlayer->hasClock()) {
+                        const auto now = std::chrono::steady_clock::now();
+                        const auto targetTime = frameTargetTime(stream.pendingFrame);
+
+                        if (now < targetTime) {
+                            const int waitMs = std::clamp(
+                                static_cast<int>(std::ceil(
+                                    std::chrono::duration<double, std::milli>(targetTime - now).count())),
+                                1,
+                                std::max(syncOptions.maxWaitMs, 1));
+                            stream.stats.avSyncDiffMs = waitMs;
+                            std::this_thread::sleep_for(std::chrono::milliseconds(waitMs));
+                            waitingForSync = true;
+                            break;
+                        }
+
+                        const auto lateMs =
+                            std::chrono::duration_cast<std::chrono::milliseconds>(now - targetTime).count();
+                        if (syncOptions.lateDropMs > 0 &&
+                            lateMs > static_cast<int64_t>(syncOptions.lateDropMs)) {
+                            bool foundNewerFrame = false;
+                            while (stream.jitterBuffer->pop(nextFrame, 0)) {
+                                stream.pendingFrame = nextFrame;
+                                ++stream.receivedFramesSinceFpsUpdate;
+                                ++stream.stats.syncDroppedFrames;
+                                foundNewerFrame = true;
+                            }
+
+                            if (foundNewerFrame) {
+                                const auto updatedTargetTime = frameTargetTime(stream.pendingFrame);
+                                const auto updatedLateMs =
+                                    std::chrono::duration_cast<std::chrono::milliseconds>(
+                                        std::chrono::steady_clock::now() - updatedTargetTime).count();
+                                if (updatedLateMs > static_cast<int64_t>(syncOptions.lateDropMs)) {
+                                    ++stream.stats.syncDroppedFrames;
+                                    stream.pendingFrame.reset();
+                                    continue;
+                                }
+                            }
+                        }
+                    }
+
+                    stream.latestFrame = stream.pendingFrame;
+                    stream.pendingFrame.reset();
+                    hasNewVideoFrame = true;
                 }
 
                 const auto jitterStats = stream.jitterBuffer->getStats();
@@ -547,7 +616,6 @@ int main(int argc, char* argv[]) {
                 stream.stats.decodedFrames = jitterStats.totalFrames;
                 stream.stats.droppedFrames = jitterStats.droppedFrames;
                 stream.stats.jitterBufferSize = jitterStats.bufferSize;
-                stream.stats.avSyncDiffMs = 0;
                 updateFrameLatency(stream.latestFrame, stream.stats);
 
                 if (index == 0) {
@@ -559,6 +627,9 @@ int main(int argc, char* argv[]) {
 
             if (!g_running) {
                 break;
+            }
+            if (waitingForSync) {
+                continue;
             }
 
             std::vector<std::shared_ptr<rtsp::MediaFrame>> frames;

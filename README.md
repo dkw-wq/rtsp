@@ -120,6 +120,18 @@ rtsp_urls:
 audio_rtsp_url: "rtsp://127.0.0.1:8554/audio"
 ```
 
+三路 RTSP 的音视频同步使用本机接收时间做软同步。可以在 `config/config.yaml` 中微调：
+
+```yaml
+sync:
+  enabled: true
+  max_wait_ms: 16
+  late_drop_ms: 250
+  audio_offset_ms: 0
+```
+
+`audio_offset_ms` 为正数时会让第一路视频等待更久，适合音频听起来偏晚的情况；为负数时视频会更早显示。
+
 本机摄像头已经配置为 MediaMTX + FFmpeg 推流，MediaMTX 位于：
 
 ..\mediamtx

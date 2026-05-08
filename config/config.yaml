@@ -34,7 +34,7 @@ rtsp:
 # Jitter Buffer设置
 jitter_buffer:
   max_size: 40      # 最大缓冲帧数
-  latency_ms: 100   # 目标延迟(毫秒)
+  latency_ms: 50    # 目标延迟(毫秒)，双路音频拆分时建议与 audio.target_latency_ms 接近
 
 # 音频播放设置
 audio:
@@ -48,6 +48,8 @@ sync:
   enabled: true   # AI不要改，只手工改
   max_wait_ms: 16
   late_drop_ms: 250
+  # 双路三 RTSP 模式下的手动音频偏移；正数让视频相对音频晚显示，负数让视频早显示。
+  audio_offset_ms: 700
 
 # 断线重连设置
 reconnect:
