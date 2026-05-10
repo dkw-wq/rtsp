@@ -61,16 +61,16 @@ reconnect:
 log_level: "info"
 
 # 渲染后端: sdl, opengl, vulkan
-renderer: "opengl"
+renderer: "vulkan"
 
 # 硬件解码: none, cuda
 hw_decode: "cuda"
 
-# 人脸检测 overlay。先保留关闭；装好 ONNX Runtime/OpenCV 并接入 SCRFD 后可开启。
+# 人脸检测 overlay。当前接入 SCRFD ONNX CPU 后端，渲染线程只画最近一次检测结果。
 face_detection:
-  enabled: false
+  enabled: true
   backend: "onnx_cpu"   # onnx_cpu, onnx_cuda, tensorrt
-  model: "models/scrfd_500m.onnx"
+  model: "models/det_500m.onnx"
   input_width: 640
   input_height: 640
   detect_every_n_frames: 5

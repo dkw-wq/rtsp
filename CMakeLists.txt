@@ -59,6 +59,9 @@ find_package(yaml-cpp REQUIRED)
 # spdlog
 find_package(spdlog REQUIRED)
 
+# Face detection
+find_package(onnxruntime CONFIG REQUIRED)
+
 # Compiler options
 if(MSVC)
     add_compile_options(/W4 /WX)
@@ -82,6 +85,7 @@ set(SOURCES
     src/config_loader.cpp
     src/face_analyzer.cpp
     src/face_detector.cpp
+    src/onnx_scrfd_detector.cpp
     src/sync_controller.cpp
     src/stream_session.cpp
     src/video_renderer.cpp
@@ -98,6 +102,7 @@ set(HEADERS
     include/face_analyzer.hpp
     include/face_detector.hpp
     include/face_types.hpp
+    include/onnx_scrfd_detector.hpp
     include/sync_controller.hpp
     include/stream_session.hpp
     include/video_renderer.hpp
@@ -149,6 +154,7 @@ target_link_libraries(rtsp_player
     Vulkan::Vulkan
     yaml-cpp::yaml-cpp
     spdlog::spdlog
+    onnxruntime::onnxruntime
 )
 
 if(CUDAToolkit_FOUND)
