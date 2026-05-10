@@ -79,6 +79,9 @@ set(SOURCES
     src/jitter_buffer.cpp
     src/audio_player.cpp
     src/frame_capture.cpp
+    src/config_loader.cpp
+    src/sync_controller.cpp
+    src/stream_session.cpp
     src/video_renderer.cpp
     src/opengl_video_renderer.cpp
     src/vulkan_video_renderer.cpp
@@ -89,6 +92,9 @@ set(HEADERS
     include/jitter_buffer.hpp
     include/audio_player.hpp
     include/frame_capture.hpp
+    include/config_loader.hpp
+    include/sync_controller.hpp
+    include/stream_session.hpp
     include/video_renderer.hpp
 )
 

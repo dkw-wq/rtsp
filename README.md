@@ -1,6 +1,6 @@
 cd C:\Users\dkw\.a_dkwrtc\rtsp
 
-D:\vcpkg\vcpkg.exe install ffmpeg:x64-windows sdl2:x64-windows yaml-cpp:x64-windows spdlog:x64-windows vulkan-headers:x64-windows vulkan-loader:x64-windows shaderc:x64-windows
+E:\vcpkg\vcpkg.exe install ffmpeg:x64-windows sdl2:x64-windows yaml-cpp:x64-windows spdlog:x64-windows vulkan-headers:x64-windows vulkan-loader:x64-windows shaderc:x64-windows
 
 .\scripts\build.ps1
 

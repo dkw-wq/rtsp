@@ -1,7 +1,7 @@
 param(
     [string]$BuildDir = "build-vcpkg",
     [string]$Config = "Release",
-    [string]$ToolchainFile = "D:/vcpkg/scripts/buildsystems/vcpkg.cmake",
+    [string]$ToolchainFile = "E:/vcpkg/scripts/buildsystems/vcpkg.cmake",
     [switch]$SkipConfigure
 )
 

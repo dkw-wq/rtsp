@@ -1,764 +1,384 @@
-#include "rtsp_client.hpp"
+#include "config_loader.hpp"
+#include "stream_session.hpp"
+#include "sync_controller.hpp"
 #include "video_renderer.hpp"
-#include "jitter_buffer.hpp"
-#include "audio_player.hpp"
 
 #include <spdlog/spdlog.h>
-#include <yaml-cpp/yaml.h>
 
-#include <iostream>
+#include <algorithm>
+#include <chrono>
+#include <cmath>
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <thread>
-#include <chrono>
-#include <cctype>
-#include <cstdint>
-#include <cmath>
-#include <algorithm>
 #include <vector>
 
 namespace {
 
-std::string toLower(std::string value) {
-    for (char& ch : value) {
-        ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
-    }
-    return value;
-}
-
-std::string toUpper(std::string value) {
-    for (char& ch : value) {
-        ch = static_cast<char>(std::toupper(static_cast<unsigned char>(ch)));
-    }
-    return value;
-}
-
-std::string displayDecodeBackend(const std::string& backend) {
-    const std::string normalized = toLower(backend);
-    return normalized == "cpu" ? "CPU" : toUpper(normalized);
-}
-
-bool parseLogLevel(const std::string& value, spdlog::level::level_enum& level) {
-    const std::string normalized = toLower(value);
-
-    if (normalized == "trace") {
-        level = spdlog::level::trace;
-    } else if (normalized == "debug") {
-        level = spdlog::level::debug;
-    } else if (normalized == "info") {
-        level = spdlog::level::info;
-    } else if (normalized == "warn" || normalized == "warning") {
-        level = spdlog::level::warn;
-    } else if (normalized == "error") {
-        level = spdlog::level::err;
-    } else if (normalized == "critical") {
-        level = spdlog::level::critical;
-    } else if (normalized == "off") {
-        level = spdlog::level::off;
-    } else {
-        return false;
-    }
-
-    return true;
-}
-
-std::string describeFilters(const std::vector<std::string>& filters) {
-    if (filters.empty()) {
-        return "none";
-    }
-
-    std::string result;
-    for (const std::string& filter : filters) {
-        if (!result.empty()) {
-            result += " -> ";
-        }
-        result += filter;
-    }
-    return result;
-}
-
-void assignPositiveInt(const YAML::Node& node, const char* key, int& target) {
-    if (!node[key]) {
-        return;
-    }
-
-    const int value = node[key].as<int>();
-    if (value > 0) {
-        target = value;
-    }
-}
-
-void assignNonNegativeInt(const YAML::Node& node, const char* key, int& target) {
-    if (!node[key]) {
-        return;
-    }
-
-    const int value = node[key].as<int>();
-    if (value >= 0) {
-        target = value;
-    }
-}
-
-std::string describeLowLatency(const rtsp::RtspConnectionOptions& options) {
-    if (!options.lowLatency) {
-        return "disabled";
-    }
-
-    return "enabled, max_delay_ms=" + std::to_string(options.maxDelayMs) +
-           ", analyze_duration_ms=" + std::to_string(options.analyzeDurationMs) +
-           ", probe_size_bytes=" + std::to_string(options.probeSizeBytes) +
-           ", reorder_queue_size=" + std::to_string(options.reorderQueueSize);
-}
-
-struct SyncOptions {
-    bool enabled = true;
-    int maxWaitMs = 16;
-    int lateDropMs = 250;
-    int audioOffsetMs = 0;
-};
-
-struct SyncState {
-    bool initialized = false;
-    double videoBaseSeconds = 0.0;
-    double audioBaseSeconds = 0.0;
-    bool audioBaseInitialized = false;
-    std::chrono::steady_clock::time_point wallBaseTime{};
-};
-
-} // namespace
-
-// 全局变量用于控制主循环
 static bool g_running = true;
 
-int main(int argc, char* argv[]) {
-    // 设置日志
-    spdlog::set_pattern("[%Y-%m-%d %H:%M:%S.%e] [%^%l%$] %v");
-
-    // 加载配置
-    std::string rtspUrl = "rtsp://127.0.0.1:8554/webcam";
-    std::vector<std::string> rtspUrls;
-    std::string audioRtspUrl = "rtsp://127.0.0.1:8554/audio";
-    int width = 1920;
-    int height = 1080;
-    std::string logLevelName = "info";
-    std::string rendererName = "sdl";
-    std::string hwDecodeBackend = "none";
-    std::vector<std::string> openglFilterNames = {"none"};
-    rtsp::RtspConnectionOptions rtspOptions;
-    rtsp::AudioPlaybackOptions audioOptions;
-    SyncOptions syncOptions;
-    size_t jitterMaxSize = 12;
-    uint32_t jitterLatencyMs = 30;
-    bool reconnectEnabled = true;
-    uint32_t reconnectInitialDelayMs = 1000;
-    uint32_t reconnectMaxDelayMs = 5000;
-    std::string configWarning;
-    bool rtspUrlsConfigured = false;
-
-    // 尝试加载配置文件
-    try {
-        YAML::Node config = YAML::LoadFile("config/config.yaml");
-        if (config["rtsp_url"]) {
-            rtspUrl = config["rtsp_url"].as<std::string>();
-        }
-        if (config["rtsp_urls"] && config["rtsp_urls"].IsSequence()) {
-            rtspUrls.clear();
-            for (const auto& urlNode : config["rtsp_urls"]) {
-                const std::string url = urlNode.as<std::string>();
-                if (!url.empty()) {
-                    rtspUrls.push_back(url);
-                }
-            }
-            rtspUrlsConfigured = !rtspUrls.empty();
-            if (rtspUrlsConfigured) {
-                rtspUrl = rtspUrls.front();
-            }
-        }
-        if (config["audio_rtsp_url"]) {
-            audioRtspUrl = config["audio_rtsp_url"].as<std::string>();
-        }
-        if (config["width"]) {
-            width = config["width"].as<int>();
-        }
-        if (config["height"]) {
-            height = config["height"].as<int>();
-        }
-        if (config["log_level"]) {
-            logLevelName = config["log_level"].as<std::string>();
-        }
-        if (config["renderer"]) {
-            rendererName = config["renderer"].as<std::string>();
-        }
-        if (config["hw_decode"]) {
-            hwDecodeBackend = config["hw_decode"].as<std::string>();
-        }
-        if (config["rtsp"]) {
-            const auto rtspConfig = config["rtsp"];
-            if (rtspConfig["transport"]) {
-                rtspOptions.transport = rtspConfig["transport"].as<std::string>();
-            }
-            assignPositiveInt(rtspConfig, "timeout_ms", rtspOptions.timeoutMs);
-            assignNonNegativeInt(rtspConfig, "buffer_size", rtspOptions.bufferSize);
-
-            if (rtspConfig["low_latency"]) {
-                const auto lowLatencyConfig = rtspConfig["low_latency"];
-                if (lowLatencyConfig.IsScalar()) {
-                    rtspOptions.lowLatency = lowLatencyConfig.as<bool>();
-                } else {
-                    if (lowLatencyConfig["enabled"]) {
-                        rtspOptions.lowLatency = lowLatencyConfig["enabled"].as<bool>();
-                    }
-                    assignNonNegativeInt(lowLatencyConfig, "max_delay_ms", rtspOptions.maxDelayMs);
-                    assignNonNegativeInt(lowLatencyConfig, "analyze_duration_ms", rtspOptions.analyzeDurationMs);
-                    assignNonNegativeInt(lowLatencyConfig, "probe_size_bytes", rtspOptions.probeSizeBytes);
-                    assignNonNegativeInt(lowLatencyConfig, "reorder_queue_size", rtspOptions.reorderQueueSize);
-                }
-            }
-        }
-        if (config["opengl_filters"] && config["opengl_filters"].IsSequence()) {
-            openglFilterNames.clear();
-            for (const auto& filterNode : config["opengl_filters"]) {
-                openglFilterNames.push_back(filterNode.as<std::string>());
-            }
-        } else if (config["opengl_filter"]) {
-            openglFilterNames = {config["opengl_filter"].as<std::string>()};
-        }
-        if (config["jitter_buffer"]) {
-            const auto jitterConfig = config["jitter_buffer"];
-            if (jitterConfig["max_size"]) {
-                int configuredMaxSize = jitterConfig["max_size"].as<int>();
-                if (configuredMaxSize > 0) {
-                    jitterMaxSize = static_cast<size_t>(configuredMaxSize);
-                }
-            }
-            if (jitterConfig["latency_ms"]) {
-                int configuredLatencyMs = jitterConfig["latency_ms"].as<int>();
-                if (configuredLatencyMs >= 0) {
-                    jitterLatencyMs = static_cast<uint32_t>(configuredLatencyMs);
-                }
-            }
-        }
-        if (config["audio"]) {
-            const auto audioConfig = config["audio"];
-            if (audioConfig["enabled"]) {
-                audioOptions.enabled = audioConfig["enabled"].as<bool>();
-            }
-            assignNonNegativeInt(audioConfig, "target_latency_ms", audioOptions.targetLatencyMs);
-            assignPositiveInt(audioConfig, "max_queue_ms", audioOptions.maxQueueMs);
-            assignPositiveInt(audioConfig, "hard_reset_queue_ms", audioOptions.hardResetQueueMs);
-        }
-        if (config["sync"]) {
-            const auto syncConfig = config["sync"];
-            if (syncConfig["enabled"]) {
-                syncOptions.enabled = syncConfig["enabled"].as<bool>();
-            }
-            assignNonNegativeInt(syncConfig, "max_wait_ms", syncOptions.maxWaitMs);
-            assignPositiveInt(syncConfig, "late_drop_ms", syncOptions.lateDropMs);
-            if (syncConfig["audio_offset_ms"]) {
-                syncOptions.audioOffsetMs = syncConfig["audio_offset_ms"].as<int>();
-            }
-        }
-        if (config["reconnect"]) {
-            const auto reconnectConfig = config["reconnect"];
-            if (reconnectConfig["enabled"]) {
-                reconnectEnabled = reconnectConfig["enabled"].as<bool>();
-            }
-            if (reconnectConfig["initial_delay_ms"]) {
-                int configuredInitialDelay = reconnectConfig["initial_delay_ms"].as<int>();
-                if (configuredInitialDelay >= 0) {
-                    reconnectInitialDelayMs = static_cast<uint32_t>(configuredInitialDelay);
-                }
-            }
-            if (reconnectConfig["max_delay_ms"]) {
-                int configuredMaxDelay = reconnectConfig["max_delay_ms"].as<int>();
-                if (configuredMaxDelay >= 0) {
-                    reconnectMaxDelayMs = static_cast<uint32_t>(configuredMaxDelay);
-                }
-            }
-        }
-    } catch (const std::exception& e) {
-        configWarning = e.what();
-    }
-
-    spdlog::level::level_enum parsedLogLevel = spdlog::level::info;
-    if (!parseLogLevel(logLevelName, parsedLogLevel)) {
-        SPDLOG_WARN("Unknown log level '{}', using info", logLevelName);
-    }
-    spdlog::set_level(parsedLogLevel);
-
-    SPDLOG_INFO("RTSP Player starting...");
-    if (!configWarning.empty()) {
-        SPDLOG_WARN("Config file not found or invalid, using defaults: {}", configWarning);
-    }
-
-    // 如果有命令行参数，使用命令行参数
-    if (argc > 2) {
-        rtspUrls = {argv[1], argv[2]};
-        rtspUrl = rtspUrls.front();
-    } else if (argc > 1) {
-        rtspUrl = argv[1];
-        if (rtspUrlsConfigured && !rtspUrls.empty()) {
-            rtspUrls[0] = rtspUrl;
-        } else {
-            rtspUrls = {rtspUrl};
-        }
-    }
-    if (rtspUrls.empty()) {
-        rtspUrls.push_back(rtspUrl);
-    }
-
-    const std::string rendererBackend = toLower(rendererName);
-    const bool usesOpenGlRenderer = rendererBackend == "opengl" || rendererBackend == "gl";
-    const bool usesVulkanRenderer = rendererBackend == "vulkan" || rendererBackend == "vk";
-
-    SPDLOG_INFO("RTSP URL: {}", rtspUrl);
-    SPDLOG_INFO("RTSP stream count: {}", rtspUrls.size());
-    SPDLOG_INFO("Renderer backend: {}", rendererName);
-    SPDLOG_INFO("Hardware decode: {}", hwDecodeBackend);
-    SPDLOG_INFO("RTSP options: transport={}, timeout_ms={}, buffer_size={}, low_latency={}",
-                rtspOptions.transport, rtspOptions.timeoutMs, rtspOptions.bufferSize,
-                describeLowLatency(rtspOptions));
-    SPDLOG_INFO("OpenGL shader pipeline: {}", describeFilters(openglFilterNames));
-    SPDLOG_INFO("Jitter buffer: max_size={}, latency_ms={}", jitterMaxSize, jitterLatencyMs);
-    SPDLOG_INFO("Audio: enabled={}, target_latency_ms={}, max_queue_ms={}, hard_reset_queue_ms={}",
-                audioOptions.enabled, audioOptions.targetLatencyMs,
-                audioOptions.maxQueueMs, audioOptions.hardResetQueueMs);
-    SPDLOG_INFO("A/V sync: enabled={}, max_wait_ms={}, late_drop_ms={}, audio_offset_ms={}",
-                syncOptions.enabled, syncOptions.maxWaitMs,
-                syncOptions.lateDropMs, syncOptions.audioOffsetMs);
-    SPDLOG_INFO("Reconnect: enabled={}, initial_delay_ms={}, max_delay_ms={}",
-                reconnectEnabled, reconnectInitialDelayMs, reconnectMaxDelayMs);
-
-    if (rtspUrls.size() > 1) {
-        const size_t streamCount = std::min<size_t>(rtspUrls.size(), 2);
-        if (!usesVulkanRenderer) {
-            SPDLOG_WARN("Multi-stream display currently uses Vulkan; ignoring renderer '{}'",
-                        rendererName);
-        }
-        if (rtspUrls.size() > streamCount) {
-            SPDLOG_WARN("Only the first {} RTSP streams are used in this build", streamCount);
-        }
-
-        struct MultiStreamState {
-            std::unique_ptr<rtsp::RtspClient> client;
-            std::unique_ptr<rtsp::JitterBuffer> jitterBuffer;
-            std::shared_ptr<rtsp::MediaFrame> pendingFrame;
-            std::shared_ptr<rtsp::MediaFrame> latestFrame;
-            rtsp::PlaybackStats stats;
-            uint64_t receivedFramesSinceFpsUpdate = 0;
-            std::chrono::steady_clock::time_point lastFpsUpdateTime =
-                std::chrono::steady_clock::now();
-        };
-
-        std::vector<MultiStreamState> streams(streamCount);
-        auto audioClient = std::make_unique<rtsp::RtspClient>();
-        auto audioPlayer = std::make_unique<rtsp::AudioPlayer>(audioOptions);
-        auto renderer = rtsp::createVulkanVideoRenderer();
-
-        for (size_t index = 0; index < streamCount; ++index) {
-            streams[index].client = std::make_unique<rtsp::RtspClient>();
-            streams[index].client->setConnectionOptions(rtspOptions);
-            streams[index].client->setAudioEnabled(false);
-            streams[index].client->setHardwareDecode(hwDecodeBackend);
-            streams[index].client->setHardwareFrameOutput(false);
-            streams[index].jitterBuffer =
-                std::make_unique<rtsp::JitterBuffer>(jitterMaxSize, jitterLatencyMs);
-            streams[index].stats.decoderBackend = "CPU";
-
-            streams[index].client->setFrameCallback(
-                [index, &streams, &audioPlayer](const std::shared_ptr<rtsp::MediaFrame>& frame) {
-                    if (!frame) {
-                        return;
-                    }
-
-                    if (frame->type == rtsp::MediaFrame::Type::AUDIO) {
-                        if (index == 0) {
-                            audioPlayer->pushFrame(frame);
-                        }
-                        return;
-                    }
-
-                    streams[index].jitterBuffer->push(frame);
-                });
-            streams[index].client->setErrorCallback(
-                [index](const std::string& error) {
-                    SPDLOG_ERROR("RTSP stream {} error: {}", index + 1, error);
-                });
-        }
-
-        const bool useSeparateAudio =
-            audioOptions.enabled && !audioRtspUrl.empty();
-        if (useSeparateAudio) {
-            audioClient->setConnectionOptions(rtspOptions);
-            audioClient->setVideoEnabled(false);
-            audioClient->setAudioEnabled(true);
-            audioClient->setHardwareDecode("none");
-            audioClient->setHardwareFrameOutput(false);
-            audioClient->setFrameCallback(
-                [&audioPlayer](const std::shared_ptr<rtsp::MediaFrame>& frame) {
-                    if (frame && frame->type == rtsp::MediaFrame::Type::AUDIO) {
-                        audioPlayer->pushFrame(frame);
-                    }
-                });
-            audioClient->setErrorCallback(
-                [](const std::string& error) {
-                    SPDLOG_ERROR("Audio RTSP error: {}", error);
-                });
-        }
-
-        auto waitBeforeReconnect = [&](uint32_t delayMs) {
-            const auto deadline =
-                std::chrono::steady_clock::now() + std::chrono::milliseconds(delayMs);
-            while (g_running && std::chrono::steady_clock::now() < deadline) {
-                if (renderer->isInitialized() && !renderer->handleEvents()) {
-                    g_running = false;
-                    return false;
-                }
-                std::this_thread::sleep_for(std::chrono::milliseconds(50));
-            }
-            return g_running;
-        };
-
-        auto connectStream = [&](size_t index, bool reconnecting, bool startAfterConnect) {
-            uint32_t delayMs = reconnectInitialDelayMs;
-            while (g_running) {
-                if (reconnecting) {
-                    SPDLOG_INFO("Reconnecting RTSP stream {}...", index + 1);
-                }
-
-                if (streams[index].client->connect(rtspUrls[index])) {
-                    SPDLOG_INFO("RTSP stream {} resolution: {}x{}",
-                                index + 1,
-                                streams[index].client->getWidth(),
-                                streams[index].client->getHeight());
-                    streams[index].jitterBuffer->clear();
-                    streams[index].latestFrame.reset();
-                    if (index == 0) {
-                        audioPlayer->reset();
-                    }
-                    if (startAfterConnect) {
-                        streams[index].client->start();
-                    }
-                    return true;
-                }
-
-                if (!reconnectEnabled) {
-                    SPDLOG_ERROR("Failed to connect RTSP stream {}", index + 1);
-                    return false;
-                }
-
-                SPDLOG_WARN("RTSP stream {} connect failed, retrying in {} ms",
-                            index + 1, delayMs);
-                if (!waitBeforeReconnect(delayMs)) {
-                    return false;
-                }
-
-                const uint32_t nextDelay = delayMs == 0 ? 1 : delayMs * 2;
-                delayMs = std::min(nextDelay, reconnectMaxDelayMs);
-            }
+bool handleEventsDuringDelay(rtsp::VideoRenderer& renderer, uint32_t delayMs) {
+    const auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::milliseconds(delayMs);
+    while (g_running && std::chrono::steady_clock::now() < deadline) {
+        if (renderer.isInitialized() && !renderer.handleEvents()) {
+            g_running = false;
             return false;
-        };
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+    return g_running;
+}
 
-        bool allConnected = true;
+bool connectStreamWithRetry(rtsp::StreamSession& stream,
+                            const rtsp::ReconnectOptions& reconnect,
+                            rtsp::VideoRenderer& renderer,
+                            bool reconnecting,
+                            bool startAfterConnect) {
+    uint32_t delayMs = reconnect.initialDelayMs;
+    while (g_running) {
+        if (reconnecting) {
+            SPDLOG_INFO("Reconnecting RTSP stream {}...", stream.streamIndex() + 1);
+        }
+
+        if (stream.connect()) {
+            if (startAfterConnect) {
+                stream.start();
+            }
+            return true;
+        }
+
+        if (!reconnect.enabled) {
+            SPDLOG_ERROR("Failed to connect RTSP stream {}", stream.streamIndex() + 1);
+            return false;
+        }
+
+        SPDLOG_WARN("RTSP stream {} connect failed, retrying in {} ms",
+                    stream.streamIndex() + 1, delayMs);
+        if (!handleEventsDuringDelay(renderer, delayMs)) {
+            return false;
+        }
+
+        const uint32_t nextDelay = delayMs == 0 ? 1 : delayMs * 2;
+        delayMs = std::min(nextDelay, reconnect.maxDelayMs);
+    }
+
+    return false;
+}
+
+std::unique_ptr<rtsp::VideoRenderer> createRenderer(const rtsp::AppConfig& config,
+                                                    bool forceVulkan) {
+    const std::string rendererBackend = rtsp::toLower(config.rendererName);
+    if (forceVulkan || rendererBackend == "vulkan" || rendererBackend == "vk") {
+        return rtsp::createVulkanVideoRenderer();
+    }
+    if (rendererBackend == "opengl" || rendererBackend == "gl") {
+        return rtsp::createOpenGlVideoRenderer(config.openglFilterNames);
+    }
+
+    if (rendererBackend != "sdl") {
+        SPDLOG_WARN("Unknown renderer backend '{}', using sdl", config.rendererName);
+    }
+    return rtsp::createSdlVideoRenderer();
+}
+
+void logConfig(const rtsp::AppConfig& config) {
+    SPDLOG_INFO("RTSP URL: {}", config.rtspUrl);
+    SPDLOG_INFO("RTSP stream count: {}", config.rtspUrls.size());
+    SPDLOG_INFO("Renderer backend: {}", config.rendererName);
+    SPDLOG_INFO("Hardware decode: {}", config.hwDecodeBackend);
+    SPDLOG_INFO("RTSP options: transport={}, timeout_ms={}, buffer_size={}, low_latency={}",
+                config.rtspOptions.transport,
+                config.rtspOptions.timeoutMs,
+                config.rtspOptions.bufferSize,
+                rtsp::describeLowLatency(config.rtspOptions));
+    SPDLOG_INFO("OpenGL shader pipeline: {}", rtsp::describeFilters(config.openglFilterNames));
+    SPDLOG_INFO("Jitter buffer: max_size={}, latency_ms={}",
+                config.jitterMaxSize,
+                config.jitterLatencyMs);
+    SPDLOG_INFO("Audio: enabled={}, target_latency_ms={}, max_queue_ms={}, hard_reset_queue_ms={}",
+                config.audioOptions.enabled,
+                config.audioOptions.targetLatencyMs,
+                config.audioOptions.maxQueueMs,
+                config.audioOptions.hardResetQueueMs);
+    SPDLOG_INFO("A/V sync: enabled={}, max_wait_ms={}, late_drop_ms={}, audio_offset_ms={}",
+                config.syncOptions.enabled,
+                config.syncOptions.maxWaitMs,
+                config.syncOptions.lateDropMs,
+                config.syncOptions.audioOffsetMs);
+    SPDLOG_INFO("Reconnect: enabled={}, initial_delay_ms={}, max_delay_ms={}",
+                config.reconnectOptions.enabled,
+                config.reconnectOptions.initialDelayMs,
+                config.reconnectOptions.maxDelayMs);
+}
+
+int runMultiStream(const rtsp::AppConfig& config) {
+    const size_t streamCount = std::min<size_t>(config.rtspUrls.size(), 2);
+    const std::string rendererBackend = rtsp::toLower(config.rendererName);
+    if (rendererBackend != "vulkan" && rendererBackend != "vk") {
+        SPDLOG_WARN("Multi-stream display currently uses Vulkan; ignoring renderer '{}'",
+                    config.rendererName);
+    }
+    if (config.rtspUrls.size() > streamCount) {
+        SPDLOG_WARN("Only the first {} RTSP streams are used in this build", streamCount);
+    }
+
+    auto renderer = createRenderer(config, true);
+    auto audioPlayer = std::make_unique<rtsp::AudioPlayer>(config.audioOptions);
+    std::vector<std::unique_ptr<rtsp::StreamSession>> streams;
+    streams.reserve(streamCount);
+
+    for (size_t index = 0; index < streamCount; ++index) {
+        rtsp::StreamSessionOptions options;
+        options.url = config.rtspUrls[index];
+        options.connectionOptions = config.rtspOptions;
+        options.hardwareDecodeBackend = config.hwDecodeBackend;
+        options.audioEnabled = false;
+        options.videoEnabled = true;
+        options.hardwareFrameOutput = false;
+        options.jitterMaxSize = config.jitterMaxSize;
+        options.jitterLatencyMs = config.jitterLatencyMs;
+        options.streamIndex = index;
+        streams.push_back(std::make_unique<rtsp::StreamSession>(options));
+    }
+
+    std::unique_ptr<rtsp::StreamSession> audioStream;
+    const bool useSeparateAudio = config.audioOptions.enabled && !config.audioRtspUrl.empty();
+    if (useSeparateAudio) {
+        rtsp::StreamSessionOptions options;
+        options.url = config.audioRtspUrl;
+        options.connectionOptions = config.rtspOptions;
+        options.hardwareDecodeBackend = "none";
+        options.audioEnabled = true;
+        options.videoEnabled = false;
+        options.hardwareFrameOutput = false;
+        options.forwardAudioToPlayer = true;
+        options.audioPlayer = audioPlayer.get();
+        options.jitterMaxSize = config.jitterMaxSize;
+        options.jitterLatencyMs = config.jitterLatencyMs;
+        options.streamIndex = streamCount;
+        audioStream = std::make_unique<rtsp::StreamSession>(options);
+    }
+
+    for (auto& stream : streams) {
+        if (!connectStreamWithRetry(*stream, config.reconnectOptions, *renderer, false, true)) {
+            return -1;
+        }
+    }
+
+    if (audioStream) {
+        if (audioStream->connect()) {
+            audioStream->start();
+            SPDLOG_INFO("Separate audio RTSP started: {}", config.audioRtspUrl);
+        } else {
+            SPDLOG_WARN("Separate audio RTSP unavailable: {}; continuing video-only",
+                        config.audioRtspUrl);
+        }
+    }
+
+    int windowWidth = 0;
+    int windowHeight = 0;
+    for (const auto& stream : streams) {
+        windowWidth += std::max(stream->client().getWidth(), 1);
+        windowHeight = std::max(windowHeight, std::max(stream->client().getHeight(), 1));
+    }
+    windowWidth = std::clamp(windowWidth, 640, 1920);
+    windowHeight = std::clamp(windowHeight, 360, 1080);
+    if (!renderer->initialize(windowWidth, windowHeight, "RTSP Player - Dual View")) {
+        SPDLOG_ERROR("Failed to initialize Vulkan multi-stream renderer");
+        return -1;
+    }
+
+    SPDLOG_INFO("Dual RTSP streaming started, press ESC or Q to quit");
+
+    while (g_running && renderer->handleEvents()) {
+        bool hasNewVideoFrame = false;
+        bool waitingForSync = false;
+
         for (size_t index = 0; index < streamCount; ++index) {
-            if (!connectStream(index, false, true)) {
-                allConnected = false;
-                break;
-            }
-        }
-        if (!allConnected) {
-            for (auto& stream : streams) {
-                stream.client->disconnect();
-            }
-            return -1;
-        }
-
-        if (useSeparateAudio) {
-            if (audioClient->connect(audioRtspUrl)) {
-                audioClient->start();
-                SPDLOG_INFO("Separate audio RTSP started: {}", audioRtspUrl);
-            } else {
-                SPDLOG_WARN("Separate audio RTSP unavailable: {}; continuing video-only",
-                            audioRtspUrl);
-            }
-        }
-
-        int windowWidth = 0;
-        int windowHeight = 0;
-        for (const auto& stream : streams) {
-            windowWidth += std::max(stream.client->getWidth(), 1);
-            windowHeight = std::max(windowHeight, std::max(stream.client->getHeight(), 1));
-        }
-        windowWidth = std::clamp(windowWidth, 640, 1920);
-        windowHeight = std::clamp(windowHeight, 360, 1080);
-        if (!renderer->initialize(windowWidth, windowHeight, "RTSP Player - Dual View")) {
-            SPDLOG_ERROR("Failed to initialize Vulkan multi-stream renderer");
-            for (auto& stream : streams) {
-                stream.client->disconnect();
-            }
-            return -1;
-        }
-
-        SPDLOG_INFO("Dual RTSP streaming started, press ESC or Q to quit");
-
-        auto updateFrameLatency = [](const std::shared_ptr<rtsp::MediaFrame>& currentFrame,
-                                     rtsp::PlaybackStats& stats) {
-            if (!currentFrame || currentFrame->recvTime.count() <= 0) {
-                return;
-            }
-
-            const auto now = std::chrono::steady_clock::now();
-            const auto frameRecvTime = std::chrono::steady_clock::time_point(currentFrame->recvTime);
-            stats.latencyMs = static_cast<uint32_t>(
-                std::chrono::duration_cast<std::chrono::milliseconds>(now - frameRecvTime).count());
-        };
-
-        auto frameTargetTime = [&audioOptions, &syncOptions](
-                                   const std::shared_ptr<rtsp::MediaFrame>& frame) {
-            const int targetDelayMs =
-                std::max(0, audioOptions.targetLatencyMs + syncOptions.audioOffsetMs);
-            const auto frameRecvTime = std::chrono::steady_clock::time_point(frame->recvTime);
-            return frameRecvTime + std::chrono::milliseconds(targetDelayMs);
-        };
-
-        while (g_running && renderer->handleEvents()) {
-            bool hasNewVideoFrame = false;
-            bool waitingForSync = false;
-            for (size_t index = 0; index < streamCount; ++index) {
-                auto& stream = streams[index];
-                if (!stream.client->isRunning()) {
-                    SPDLOG_WARN("RTSP stream {} receive loop stopped", index + 1);
-                    stream.client->stop();
-                    stream.client->disconnect();
-                    stream.jitterBuffer->clear();
-                    stream.latestFrame.reset();
-                    if (index == 0) {
-                        audioPlayer->reset();
-                    }
-
-                    if (!reconnectEnabled || !connectStream(index, true, true)) {
-                        g_running = false;
-                        break;
-                    }
-                    continue;
-                }
-
-                std::shared_ptr<rtsp::MediaFrame> nextFrame;
-                const bool syncOrderedPlayback =
-                    index == 0 && syncOptions.enabled && audioPlayer->hasClock();
-                if (!stream.pendingFrame &&
-                    stream.jitterBuffer->pop(nextFrame, index == 0 ? 1 : 0)) {
-                    stream.pendingFrame = nextFrame;
-                    ++stream.receivedFramesSinceFpsUpdate;
-                    if (!syncOrderedPlayback) {
-                        while (stream.jitterBuffer->pop(nextFrame, 0)) {
-                            if (stream.pendingFrame) {
-                                ++stream.stats.syncDroppedFrames;
-                            }
-                            stream.pendingFrame = nextFrame;
-                            ++stream.receivedFramesSinceFpsUpdate;
-                        }
-                    }
-                }
-
-                if (stream.pendingFrame) {
-                    if (index == 0 && syncOptions.enabled && audioPlayer->hasClock()) {
-                        const auto now = std::chrono::steady_clock::now();
-                        const auto targetTime = frameTargetTime(stream.pendingFrame);
-
-                        if (now < targetTime) {
-                            const int waitMs = std::clamp(
-                                static_cast<int>(std::ceil(
-                                    std::chrono::duration<double, std::milli>(targetTime - now).count())),
-                                1,
-                                std::max(syncOptions.maxWaitMs, 1));
-                            stream.stats.avSyncDiffMs = waitMs;
-                            std::this_thread::sleep_for(std::chrono::milliseconds(waitMs));
-                            waitingForSync = true;
-                            break;
-                        }
-
-                        const auto lateMs =
-                            std::chrono::duration_cast<std::chrono::milliseconds>(now - targetTime).count();
-                        if (syncOptions.lateDropMs > 0 &&
-                            lateMs > static_cast<int64_t>(syncOptions.lateDropMs)) {
-                            bool foundNewerFrame = false;
-                            while (stream.jitterBuffer->pop(nextFrame, 0)) {
-                                stream.pendingFrame = nextFrame;
-                                ++stream.receivedFramesSinceFpsUpdate;
-                                ++stream.stats.syncDroppedFrames;
-                                foundNewerFrame = true;
-                            }
-
-                            if (foundNewerFrame) {
-                                const auto updatedTargetTime = frameTargetTime(stream.pendingFrame);
-                                const auto updatedLateMs =
-                                    std::chrono::duration_cast<std::chrono::milliseconds>(
-                                        std::chrono::steady_clock::now() - updatedTargetTime).count();
-                                if (updatedLateMs > static_cast<int64_t>(syncOptions.lateDropMs)) {
-                                    ++stream.stats.syncDroppedFrames;
-                                    stream.pendingFrame.reset();
-                                    continue;
-                                }
-                            }
-                        }
-                    }
-
-                    stream.latestFrame = stream.pendingFrame;
-                    stream.pendingFrame.reset();
-                    hasNewVideoFrame = true;
-                }
-
-                const auto jitterStats = stream.jitterBuffer->getStats();
-                stream.stats.decoderBackend =
-                    displayDecodeBackend(stream.client->getDecodeBackend());
-                stream.stats.hardwareDecodeStatus = stream.client->getHardwareDecodeStatus();
-                stream.stats.decodedFrames = jitterStats.totalFrames;
-                stream.stats.droppedFrames = jitterStats.droppedFrames;
-                stream.stats.jitterBufferSize = jitterStats.bufferSize;
-                updateFrameLatency(stream.latestFrame, stream.stats);
-
+            auto& stream = *streams[index];
+            if (!stream.isRunning()) {
+                SPDLOG_WARN("RTSP stream {} receive loop stopped", index + 1);
+                stream.stopAndDisconnect();
+                stream.resetBufferedFrames();
                 if (index == 0) {
-                    const auto audioStats = audioPlayer->getStats();
-                    stream.stats.audioActive = audioStats.active;
-                    stream.stats.audioQueueMs = audioStats.queuedMs;
+                    audioPlayer->reset();
                 }
-            }
 
-            if (!g_running) {
-                break;
-            }
-            if (waitingForSync) {
+                if (!config.reconnectOptions.enabled ||
+                    !connectStreamWithRetry(stream, config.reconnectOptions, *renderer, true, true)) {
+                    g_running = false;
+                    break;
+                }
                 continue;
             }
 
-            std::vector<std::shared_ptr<rtsp::MediaFrame>> frames;
-            frames.reserve(streamCount);
-            bool hasAnyFrame = false;
-            for (const auto& stream : streams) {
-                frames.push_back(stream.latestFrame);
-                hasAnyFrame = hasAnyFrame || static_cast<bool>(stream.latestFrame);
-            }
-
-            if (hasAnyFrame && hasNewVideoFrame) {
-                renderer->setPlaybackStats(streams.front().stats);
-                renderer->render(frames);
-
-                const auto now = std::chrono::steady_clock::now();
-                for (size_t index = 0; index < streamCount; ++index) {
-                    auto& stream = streams[index];
-                    const auto elapsed = now - stream.lastFpsUpdateTime;
-                    if (elapsed >= std::chrono::seconds(1)) {
-                        const double elapsedSeconds =
-                            std::chrono::duration<double>(elapsed).count();
-                        stream.stats.fps =
-                            static_cast<double>(stream.receivedFramesSinceFpsUpdate) /
-                            elapsedSeconds;
-                        SPDLOG_INFO("RTSP stream {} input fps={:.1f}, jitter_buffer={}, dropped={}, latency_ms={}",
-                                    index + 1,
-                                    stream.stats.fps,
-                                    stream.stats.jitterBufferSize,
-                                    stream.stats.droppedFrames,
-                                    stream.stats.latencyMs);
-                        stream.receivedFramesSinceFpsUpdate = 0;
-                        stream.lastFpsUpdateTime = now;
+            std::shared_ptr<rtsp::MediaFrame> nextFrame;
+            const bool syncOrderedPlayback =
+                index == 0 && config.syncOptions.enabled && audioPlayer->hasClock();
+            if (!stream.pendingFrame &&
+                stream.jitterBuffer().pop(nextFrame, index == 0 ? 1 : 0)) {
+                stream.pendingFrame = nextFrame;
+                stream.noteInputFrame();
+                if (!syncOrderedPlayback) {
+                    while (stream.jitterBuffer().pop(nextFrame, 0)) {
+                        if (stream.pendingFrame) {
+                            ++stream.stats.syncDroppedFrames;
+                        }
+                        stream.pendingFrame = nextFrame;
+                        stream.noteInputFrame();
                     }
                 }
             }
 
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            if (stream.pendingFrame) {
+                if (index == 0 && config.syncOptions.enabled && audioPlayer->hasClock()) {
+                    const int targetDelayMs =
+                        config.audioOptions.targetLatencyMs + config.syncOptions.audioOffsetMs;
+                    const auto now = std::chrono::steady_clock::now();
+                    const auto targetTime =
+                        rtsp::frameTargetTimeByReceiveTime(stream.pendingFrame, targetDelayMs);
+
+                    if (now < targetTime) {
+                        const int waitMs = std::clamp(
+                            static_cast<int>(std::ceil(
+                                std::chrono::duration<double, std::milli>(targetTime - now).count())),
+                            1,
+                            std::max(config.syncOptions.maxWaitMs, 1));
+                        stream.stats.avSyncDiffMs = waitMs;
+                        std::this_thread::sleep_for(std::chrono::milliseconds(waitMs));
+                        waitingForSync = true;
+                        break;
+                    }
+
+                    const auto lateMs =
+                        std::chrono::duration_cast<std::chrono::milliseconds>(now - targetTime).count();
+                    if (config.syncOptions.lateDropMs > 0 &&
+                        lateMs > static_cast<int64_t>(config.syncOptions.lateDropMs)) {
+                        bool foundNewerFrame = false;
+                        while (stream.jitterBuffer().pop(nextFrame, 0)) {
+                            stream.pendingFrame = nextFrame;
+                            stream.noteInputFrame();
+                            ++stream.stats.syncDroppedFrames;
+                            foundNewerFrame = true;
+                        }
+
+                        if (foundNewerFrame) {
+                            const auto updatedTargetTime =
+                                rtsp::frameTargetTimeByReceiveTime(stream.pendingFrame, targetDelayMs);
+                            const auto updatedLateMs =
+                                std::chrono::duration_cast<std::chrono::milliseconds>(
+                                    std::chrono::steady_clock::now() - updatedTargetTime).count();
+                            if (updatedLateMs > static_cast<int64_t>(config.syncOptions.lateDropMs)) {
+                                ++stream.stats.syncDroppedFrames;
+                                stream.pendingFrame.reset();
+                                continue;
+                            }
+                        }
+                    }
+                }
+
+                stream.latestFrame = stream.pendingFrame;
+                stream.pendingFrame.reset();
+                hasNewVideoFrame = true;
+            }
+
+            stream.refreshStats();
+            if (index == 0) {
+                const auto audioStats = audioPlayer->getStats();
+                stream.stats.audioActive = audioStats.active;
+                stream.stats.audioQueueMs = audioStats.queuedMs;
+            }
         }
 
-        for (auto& stream : streams) {
-            stream.client->stop();
-            stream.client->disconnect();
+        if (!g_running) {
+            break;
         }
-        audioClient->stop();
-        audioClient->disconnect();
-        audioPlayer->reset();
+        if (waitingForSync) {
+            continue;
+        }
 
-        SPDLOG_INFO("Dual RTSP Player stopped");
-        return 0;
+        std::vector<std::shared_ptr<rtsp::MediaFrame>> frames;
+        frames.reserve(streamCount);
+        bool hasAnyFrame = false;
+        for (const auto& stream : streams) {
+            frames.push_back(stream->latestFrame);
+            hasAnyFrame = hasAnyFrame || static_cast<bool>(stream->latestFrame);
+        }
+
+        if (hasAnyFrame && hasNewVideoFrame) {
+            renderer->setPlaybackStats(streams.front()->stats);
+            renderer->render(frames);
+
+            for (auto& stream : streams) {
+                stream->updateInputFpsIfDue();
+            }
+        }
+
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
 
-    // 创建组件
-    auto rtspClient = std::make_unique<rtsp::RtspClient>();
-    rtspClient->setConnectionOptions(rtspOptions);
-    rtspClient->setAudioEnabled(audioOptions.enabled);
-    rtspClient->setHardwareDecode(hwDecodeBackend);
-    auto jitterBuffer = std::make_unique<rtsp::JitterBuffer>(jitterMaxSize, jitterLatencyMs);
-    auto audioPlayer = std::make_unique<rtsp::AudioPlayer>(audioOptions);
-    std::unique_ptr<rtsp::VideoRenderer> renderer;
+    for (auto& stream : streams) {
+        stream->stopAndDisconnect();
+    }
+    if (audioStream) {
+        audioStream->stopAndDisconnect();
+    }
+    audioPlayer->reset();
+
+    SPDLOG_INFO("Dual RTSP Player stopped");
+    return 0;
+}
+
+int runSingleStream(const rtsp::AppConfig& config) {
+    const std::string rendererBackend = rtsp::toLower(config.rendererName);
+    const bool usesOpenGlRenderer = rendererBackend == "opengl" || rendererBackend == "gl";
+    const bool usesVulkanRenderer = rendererBackend == "vulkan" || rendererBackend == "vk";
+
+    auto renderer = createRenderer(config, false);
+    auto audioPlayer = std::make_unique<rtsp::AudioPlayer>(config.audioOptions);
+
+    rtsp::StreamSessionOptions options;
+    options.url = config.rtspUrl;
+    options.connectionOptions = config.rtspOptions;
+    options.hardwareDecodeBackend = config.hwDecodeBackend;
+    options.audioEnabled = config.audioOptions.enabled;
+    options.videoEnabled = true;
 #ifdef RTSP_ENABLE_CUDA_INTEROP
-    rtspClient->setHardwareFrameOutput(usesOpenGlRenderer || usesVulkanRenderer);
+    options.hardwareFrameOutput = usesOpenGlRenderer || usesVulkanRenderer;
 #else
-    rtspClient->setHardwareFrameOutput(false);
+    options.hardwareFrameOutput = false;
 #endif
-    if (usesOpenGlRenderer) {
-        renderer = rtsp::createOpenGlVideoRenderer(openglFilterNames);
-    } else if (usesVulkanRenderer) {
-        renderer = rtsp::createVulkanVideoRenderer();
-    } else {
-        if (rendererBackend != "sdl") {
-            SPDLOG_WARN("Unknown renderer backend '{}', using sdl", rendererName);
-        }
-        renderer = rtsp::createSdlVideoRenderer();
-    }
-    renderer->setCommandCallback([&rtspClient](rtsp::RendererCommand command) {
+    options.forwardAudioToPlayer = true;
+    options.audioPlayer = audioPlayer.get();
+    options.jitterMaxSize = config.jitterMaxSize;
+    options.jitterLatencyMs = config.jitterLatencyMs;
+    options.streamIndex = 0;
+    auto stream = std::make_unique<rtsp::StreamSession>(options);
+
+    renderer->setCommandCallback([&stream](rtsp::RendererCommand command) {
         if (command != rtsp::RendererCommand::ToggleRecording) {
             return;
         }
 
-        if (rtspClient->isRecording()) {
-            rtspClient->stopRecording();
+        if (stream->client().isRecording()) {
+            stream->client().stopRecording();
         } else {
-            rtspClient->startRecording();
+            stream->client().startRecording();
         }
     });
 
-    // 设置帧回调
-    rtspClient->setFrameCallback([&jitterBuffer, &audioPlayer](const std::shared_ptr<rtsp::MediaFrame>& frame) {
-        if (!frame) {
-            return;
-        }
-
-        if (frame->type == rtsp::MediaFrame::Type::AUDIO) {
-            audioPlayer->pushFrame(frame);
-            return;
-        }
-
-        jitterBuffer->push(frame);
-    });
-
-    // 设置错误回调
-    rtspClient->setErrorCallback([](const std::string& error) {
-        SPDLOG_ERROR("RTSP Error: {}", error);
-    });
-
-    auto waitBeforeReconnect = [&](uint32_t delayMs) {
-        const auto deadline =
-            std::chrono::steady_clock::now() + std::chrono::milliseconds(delayMs);
-        while (g_running && std::chrono::steady_clock::now() < deadline) {
-            if (renderer->isInitialized() && !renderer->handleEvents()) {
-                g_running = false;
-                return false;
-            }
-            std::this_thread::sleep_for(std::chrono::milliseconds(50));
-        }
-        return g_running;
-    };
-
-    auto connectStream = [&](bool reconnecting) {
-        uint32_t delayMs = reconnectInitialDelayMs;
-
+    auto connectAndInitialize = [&](bool reconnecting) {
+        uint32_t delayMs = config.reconnectOptions.initialDelayMs;
         while (g_running) {
             if (reconnecting) {
                 SPDLOG_INFO("Reconnecting to RTSP stream...");
             }
 
-            if (rtspClient->connect(rtspUrl)) {
-                const int newWidth = rtspClient->getWidth();
-                const int newHeight = rtspClient->getHeight();
+            if (stream->connect()) {
+                const int newWidth = stream->client().getWidth();
+                const int newHeight = stream->client().getHeight();
                 SPDLOG_INFO("Video resolution: {}x{}", newWidth, newHeight);
 
                 if (!renderer->isInitialized() ||
@@ -766,283 +386,145 @@ int main(int argc, char* argv[]) {
                     newHeight != renderer->getHeight()) {
                     if (!renderer->initialize(newWidth, newHeight, "RTSP Player")) {
                         SPDLOG_ERROR("Failed to initialize renderer");
-                        rtspClient->disconnect();
+                        stream->client().disconnect();
                         return false;
                     }
                 }
 
-                width = newWidth;
-                height = newHeight;
-                jitterBuffer->clear();
                 audioPlayer->reset();
-                rtspClient->start();
+                stream->start();
                 SPDLOG_INFO("Streaming started, press ESC or Q to quit");
                 return true;
             }
 
-            if (!reconnectEnabled) {
+            if (!config.reconnectOptions.enabled) {
                 SPDLOG_ERROR("Failed to connect to RTSP stream");
                 return false;
             }
 
             SPDLOG_WARN("RTSP connect failed, retrying in {} ms", delayMs);
-            if (!waitBeforeReconnect(delayMs)) {
+            if (!handleEventsDuringDelay(*renderer, delayMs)) {
                 return false;
             }
 
             const uint32_t nextDelay = delayMs == 0 ? 1 : delayMs * 2;
-            delayMs = std::min(nextDelay, reconnectMaxDelayMs);
+            delayMs = std::min(nextDelay, config.reconnectOptions.maxDelayMs);
         }
 
         return false;
     };
 
-    if (!connectStream(false)) {
+    if (!connectAndInitialize(false)) {
         return -1;
     }
 
-    // 主渲染循环
     std::shared_ptr<rtsp::MediaFrame> frame;
-    std::shared_ptr<rtsp::MediaFrame> pendingVideoFrame;
-    rtsp::PlaybackStats playbackStats;
-    playbackStats.decoderBackend = displayDecodeBackend(rtspClient->getDecodeBackend());
-    playbackStats.hardwareDecodeStatus = rtspClient->getHardwareDecodeStatus();
+    rtsp::SingleStreamSyncController sync(config.syncOptions);
     uint64_t renderedFramesSinceFpsUpdate = 0;
-    uint64_t syncDroppedFrames = 0;
-    SyncState syncState;
     auto lastFpsUpdateTime = std::chrono::steady_clock::now();
-    auto updateFrameLatency = [](const std::shared_ptr<rtsp::MediaFrame>& currentFrame,
-                                 rtsp::PlaybackStats& stats) {
-        if (!currentFrame || currentFrame->recvTime.count() <= 0) {
-            return;
-        }
-
-        const auto now = std::chrono::steady_clock::now();
-        const auto frameRecvTime = std::chrono::steady_clock::time_point(currentFrame->recvTime);
-        stats.latencyMs = static_cast<uint32_t>(
-            std::chrono::duration_cast<std::chrono::milliseconds>(now - frameRecvTime).count());
-    };
-    auto dropReadyVideoFrames = [&jitterBuffer]() {
-        uint64_t dropped = 0;
-        std::shared_ptr<rtsp::MediaFrame> staleFrame;
-        while (jitterBuffer->pop(staleFrame, 0)) {
-            ++dropped;
-        }
-        return dropped;
-    };
 
     while (g_running && renderer->handleEvents()) {
-        if (!rtspClient->isRunning()) {
+        if (!stream->isRunning()) {
             SPDLOG_WARN("RTSP receive loop stopped");
-            rtspClient->stop();
-            rtspClient->disconnect();
-            jitterBuffer->clear();
+            stream->stopAndDisconnect();
+            stream->resetBufferedFrames();
+            stream->resetStats();
             audioPlayer->reset();
-            pendingVideoFrame.reset();
-
-            playbackStats = {};
-            playbackStats.decoderBackend = "CPU";
-            playbackStats.hardwareDecodeStatus = rtspClient->getHardwareDecodeStatus();
+            sync.reset();
             renderedFramesSinceFpsUpdate = 0;
-            syncDroppedFrames = 0;
-            syncState = {};
             lastFpsUpdateTime = std::chrono::steady_clock::now();
 
-            if (!reconnectEnabled || !connectStream(true)) {
+            if (!config.reconnectOptions.enabled || !connectAndInitialize(true)) {
                 break;
             }
 
             continue;
         }
 
-        if (!pendingVideoFrame) {
+        if (!stream->pendingFrame) {
             std::shared_ptr<rtsp::MediaFrame> nextFrame;
-            if (jitterBuffer->pop(nextFrame, 1)) {
-                pendingVideoFrame = nextFrame;
+            if (stream->jitterBuffer().pop(nextFrame, 1)) {
+                stream->pendingFrame = nextFrame;
             }
         }
 
-        if (pendingVideoFrame) {
-            frame = pendingVideoFrame;
-            updateFrameLatency(frame, playbackStats);
+        if (stream->pendingFrame) {
+            frame = stream->pendingFrame;
+            rtsp::updateFrameLatency(frame, stream->stats);
+            stream->refreshStats();
 
-            const auto jitterStats = jitterBuffer->getStats();
-            playbackStats.decoderBackend = displayDecodeBackend(rtspClient->getDecodeBackend());
-            playbackStats.hardwareDecodeStatus = rtspClient->getHardwareDecodeStatus();
-            playbackStats.decodedFrames = jitterStats.totalFrames;
-            playbackStats.droppedFrames = jitterStats.droppedFrames;
-            playbackStats.syncDroppedFrames = syncDroppedFrames;
-            playbackStats.jitterBufferSize = jitterStats.bufferSize;
-            const auto audioStats = audioPlayer->getStats();
-            playbackStats.audioActive = audioStats.active;
-            playbackStats.audioQueueMs = audioStats.queuedMs;
+            const auto decision = sync.synchronize(
+                frame,
+                stream->pendingFrame,
+                stream->jitterBuffer(),
+                *audioPlayer,
+                stream->stats);
 
-            if (syncOptions.enabled &&
-                audioStats.sampleRate > 0 &&
-                !audioStats.active &&
-                audioStats.queuedMs < audioStats.targetLatencyMs) {
-                ++syncDroppedFrames;
-                syncDroppedFrames += dropReadyVideoFrames();
-                playbackStats.syncDroppedFrames = syncDroppedFrames;
-                pendingVideoFrame.reset();
-                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            if (decision.type == rtsp::SyncDecision::Type::Wait) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(decision.waitMs));
                 if (!renderer->handleEvents()) {
                     g_running = false;
                     break;
                 }
                 continue;
             }
-
-            if (syncOptions.enabled && frame->ptsSeconds > 0.0) {
-                if (!syncState.initialized) {
-                    syncState.initialized = true;
-                    syncState.videoBaseSeconds = frame->ptsSeconds;
-                    syncState.wallBaseTime = std::chrono::steady_clock::now();
-                    SPDLOG_INFO("Video sync base: video={:.3f}s",
-                                syncState.videoBaseSeconds);
-                }
-
-                const auto wallElapsedSeconds = std::chrono::duration<double>(
-                    std::chrono::steady_clock::now() - syncState.wallBaseTime).count();
-                double videoDelayMs =
-                    ((frame->ptsSeconds - syncState.videoBaseSeconds) - wallElapsedSeconds) * 1000.0;
-
-                if (audioPlayer->hasClock()) {
-                    const double audioClock = audioPlayer->clockSeconds();
-                    if (!syncState.audioBaseInitialized) {
-                        syncState.audioBaseInitialized = true;
-                        syncState.audioBaseSeconds = audioClock;
-                        SPDLOG_INFO("A/V sync base: video={:.3f}s, audio={:.3f}s",
-                                    syncState.videoBaseSeconds, syncState.audioBaseSeconds);
-                    }
-
-                    auto frameAudioDiffMs = [&syncState, audioClock](
-                                                const std::shared_ptr<rtsp::MediaFrame>& currentFrame) {
-                        return ((currentFrame->ptsSeconds - syncState.videoBaseSeconds) -
-                                (audioClock - syncState.audioBaseSeconds)) * 1000.0;
-                    };
-
-                    double avDiffMs = frameAudioDiffMs(frame);
-                    bool waitingForNewerFrame = false;
-
-                    while (syncOptions.lateDropMs > 0 &&
-                           avDiffMs < -static_cast<double>(syncOptions.lateDropMs)) {
-                        ++syncDroppedFrames;
-
-                        std::shared_ptr<rtsp::MediaFrame> catchUpFrame;
-                        if (!jitterBuffer->pop(catchUpFrame, 0)) {
-                            pendingVideoFrame.reset();
-                            waitingForNewerFrame = true;
-                            break;
-                        }
-
-                        pendingVideoFrame = catchUpFrame;
-                        frame = pendingVideoFrame;
-                        updateFrameLatency(frame, playbackStats);
-                        avDiffMs = frameAudioDiffMs(frame);
-                    }
-
-                    playbackStats.avSyncDiffMs = static_cast<int32_t>(std::lround(avDiffMs));
-                    playbackStats.syncDroppedFrames = syncDroppedFrames;
-
-                    if (waitingForNewerFrame) {
-                        continue;
-                    }
-
-                    if (avDiffMs > 1.0 && syncOptions.maxWaitMs > 0) {
-                        const int waitMs =
-                            std::clamp(static_cast<int>(std::ceil(avDiffMs)), 1, syncOptions.maxWaitMs);
-                        std::this_thread::sleep_for(std::chrono::milliseconds(waitMs));
-                        if (!renderer->handleEvents()) {
-                            g_running = false;
-                            break;
-                        }
-
-                        continue;
-                    }
-                } else {
-                    playbackStats.avSyncDiffMs = 0;
-                    syncState.audioBaseInitialized = false;
-
-                    if (videoDelayMs > 1.0 && syncOptions.maxWaitMs > 0) {
-                        const int waitMs =
-                            std::clamp(static_cast<int>(std::ceil(videoDelayMs)), 1, syncOptions.maxWaitMs);
-                        std::this_thread::sleep_for(std::chrono::milliseconds(waitMs));
-                        if (!renderer->handleEvents()) {
-                            g_running = false;
-                            break;
-                        }
-
-                        continue;
-                    }
-
-                    bool waitingForNewerFrame = false;
-                    while (syncOptions.lateDropMs > 0 &&
-                           videoDelayMs < -static_cast<double>(syncOptions.lateDropMs)) {
-                        ++syncDroppedFrames;
-
-                        std::shared_ptr<rtsp::MediaFrame> catchUpFrame;
-                        if (!jitterBuffer->pop(catchUpFrame, 0)) {
-                            pendingVideoFrame.reset();
-                            waitingForNewerFrame = true;
-                            break;
-                        }
-
-                        pendingVideoFrame = catchUpFrame;
-                        frame = pendingVideoFrame;
-                        updateFrameLatency(frame, playbackStats);
-
-                        const auto updatedWallElapsedSeconds = std::chrono::duration<double>(
-                            std::chrono::steady_clock::now() - syncState.wallBaseTime).count();
-                        videoDelayMs =
-                            ((frame->ptsSeconds - syncState.videoBaseSeconds) -
-                             updatedWallElapsedSeconds) * 1000.0;
-                    }
-
-                    playbackStats.syncDroppedFrames = syncDroppedFrames;
-                    if (waitingForNewerFrame) {
-                        continue;
-                    }
-                }
-            } else {
-                playbackStats.avSyncDiffMs = 0;
-                if (!syncOptions.enabled || !audioPlayer->hasClock()) {
-                    syncState = {};
-                }
+            if (decision.type == rtsp::SyncDecision::Type::WaitingForNewerFrame) {
+                continue;
             }
 
-            const auto updatedJitterStats = jitterBuffer->getStats();
-            playbackStats.decodedFrames = updatedJitterStats.totalFrames;
-            playbackStats.droppedFrames = updatedJitterStats.droppedFrames;
-            playbackStats.jitterBufferSize = updatedJitterStats.bufferSize;
-            playbackStats.syncDroppedFrames = syncDroppedFrames;
-            renderer->setPlaybackStats(playbackStats);
+            stream->refreshStats();
+            stream->stats.syncDroppedFrames = sync.droppedFrames();
+            renderer->setPlaybackStats(stream->stats);
             if (renderer->render(frame)) {
                 ++renderedFramesSinceFpsUpdate;
             }
-            pendingVideoFrame.reset();
+            stream->pendingFrame.reset();
 
             const auto now = std::chrono::steady_clock::now();
             const auto elapsed = now - lastFpsUpdateTime;
             if (elapsed >= std::chrono::seconds(1)) {
                 const double elapsedSeconds =
                     std::chrono::duration<double>(elapsed).count();
-                playbackStats.fps =
+                stream->stats.fps =
                     static_cast<double>(renderedFramesSinceFpsUpdate) / elapsedSeconds;
                 renderedFramesSinceFpsUpdate = 0;
                 lastFpsUpdateTime = now;
             }
         }
 
-        // 短暂休眠避免CPU占用过高
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
 
-    // 停止接收
-    rtspClient->stop();
-    rtspClient->disconnect();
+    stream->stopAndDisconnect();
     audioPlayer->reset();
 
     SPDLOG_INFO("RTSP Player stopped");
     return 0;
+}
+
+} // namespace
+
+int main(int argc, char* argv[]) {
+    spdlog::set_pattern("[%Y-%m-%d %H:%M:%S.%e] [%^%l%$] %v");
+
+    auto config = rtsp::loadAppConfig("config/config.yaml");
+    rtsp::applyCommandLineOverrides(config, argc, argv);
+
+    spdlog::level::level_enum parsedLogLevel = spdlog::level::info;
+    if (!rtsp::parseLogLevel(config.logLevelName, parsedLogLevel)) {
+        SPDLOG_WARN("Unknown log level '{}', using info", config.logLevelName);
+    }
+    spdlog::set_level(parsedLogLevel);
+
+    SPDLOG_INFO("RTSP Player starting...");
+    if (!config.warning.empty()) {
+        SPDLOG_WARN("Config file not found or invalid, using defaults: {}", config.warning);
+    }
+    logConfig(config);
+
+    if (config.rtspUrls.size() > 1) {
+        return runMultiStream(config);
+    }
+
+    return runSingleStream(config);
 }
