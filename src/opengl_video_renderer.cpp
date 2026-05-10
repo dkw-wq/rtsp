@@ -470,6 +470,31 @@ ViewportRect calculateAspectFitViewport(int drawableWidth, int drawableHeight,
     };
 }
 
+ViewportRect calculateAspectFitViewport(int drawableWidth, int drawableHeight,
+                                        int videoWidth, int videoHeight,
+                                        uint32_t slotIndex,
+                                        uint32_t slotCount) {
+    if (drawableWidth <= 0 || drawableHeight <= 0 ||
+        videoWidth <= 0 || videoHeight <= 0) {
+        return {};
+    }
+
+    const uint32_t columns = std::max<uint32_t>(slotCount, 1U);
+    const int panelWidth = std::max(1, drawableWidth / static_cast<int>(columns));
+    const int panelHeight = drawableHeight;
+    const int panelX = panelWidth *
+        static_cast<int>(std::min<uint32_t>(slotIndex, columns - 1U));
+
+    const ViewportRect local =
+        calculateAspectFitViewport(panelWidth, panelHeight, videoWidth, videoHeight);
+    return {
+        static_cast<GLint>(panelX + local.x),
+        local.y,
+        local.width,
+        local.height
+    };
+}
+
 using Glyph = std::array<uint8_t, 7>;
 
 Glyph glyphFor(char ch) {
@@ -522,7 +547,9 @@ public:
 
     bool initialize(int width, int height, const std::string& title) override;
     bool render(const std::shared_ptr<MediaFrame>& frame) override;
+    bool render(const std::vector<std::shared_ptr<MediaFrame>>& frames) override;
     void setPlaybackStats(const PlaybackStats& stats) override;
+    void setFaceOverlays(const std::vector<FaceDetectionResult>& overlays) override;
     bool handleEvents() override;
     void close() override;
 
@@ -539,6 +566,12 @@ private:
     void setupTexture(GLuint texture) const;
     void uploadFilterPipeline();
     void applyVideoViewport() const;
+    void applyVideoViewportFor(int videoWidth,
+                               int videoHeight,
+                               uint32_t slotIndex,
+                               uint32_t slotCount) const;
+    bool uploadNv12Textures(const uint8_t* y, const uint8_t* uv, int width, int height);
+    void drawCurrentTextures();
     bool renderNv12(const uint8_t* y, const uint8_t* uv, int width, int height);
     bool renderCudaNv12(const MediaFrame& frame);
     bool finishFrameRender();
@@ -554,6 +587,8 @@ private:
     bool downloadCudaFrameToNv12(const MediaFrame& frame, std::vector<uint8_t>& data) const;
 #endif
     void drawOverlay();
+    void drawFaceOverlays(int drawableWidth, int drawableHeight);
+    void drawRectOutline(float x, float y, float width, float height, float thickness);
     void drawText(float x, float y, const std::string& text, float scale);
     void drawRect(float x, float y, float width, float height);
     void flushOverlay(float red, float green, float blue, float alpha);
@@ -585,12 +620,16 @@ private:
     std::vector<float> overlayVertices_;
     int previewFilterMode_;
     PlaybackStats playbackStats_;
+    std::vector<FaceDetectionResult> faceOverlays_;
     RgbVideoRecorder recorder_;
     bool screenshotRequested_;
     int recordingFps_;
     bool fKeyDown_;
     bool sKeyDown_;
     bool rKeyDown_;
+    int textureWidth_;
+    int textureHeight_;
+    uint32_t activeVideoSlots_;
 
     int width_;
     int height_;
@@ -627,12 +666,16 @@ OpenGlVideoRenderer::OpenGlVideoRenderer(const std::vector<std::string>& filterN
     , overlayVertices_()
     , previewFilterMode_(0)
     , playbackStats_()
+    , faceOverlays_()
     , recorder_()
     , screenshotRequested_(false)
     , recordingFps_(15)
     , fKeyDown_(false)
     , sKeyDown_(false)
     , rKeyDown_(false)
+    , textureWidth_(0)
+    , textureHeight_(0)
+    , activeVideoSlots_(1)
     , width_(0)
     , height_(0)
     , initialized_(false)
@@ -707,6 +750,7 @@ bool OpenGlVideoRenderer::render(const std::shared_ptr<MediaFrame>& frame) {
     }
 
     if (frame->pixelFormat == MediaFrame::PixelFormat::CUDA_NV12) {
+        activeVideoSlots_ = 1;
         return renderCudaNv12(*frame);
     }
 
@@ -729,8 +773,70 @@ bool OpenGlVideoRenderer::render(const std::shared_ptr<MediaFrame>& frame) {
         frame->height);
 }
 
+bool OpenGlVideoRenderer::render(const std::vector<std::shared_ptr<MediaFrame>>& frames) {
+    if (!initialized_ || frames.empty()) {
+        return false;
+    }
+
+    const size_t slotCount = std::min<size_t>(frames.size(), 2);
+    bool renderedAny = false;
+
+    glClear(GL_COLOR_BUFFER_BIT);
+    gl_.activeTexture(GL_TEXTURE0);
+    gl_.useProgram(program_);
+
+    for (size_t slot = 0; slot < slotCount; ++slot) {
+        const auto& frame = frames[slot];
+        if (!frame) {
+            continue;
+        }
+        if (frame->pixelFormat != MediaFrame::PixelFormat::NV12) {
+            SPDLOG_WARN("OpenGL multi-stream renderer expected CPU NV12 frame for stream {}",
+                        slot + 1);
+            continue;
+        }
+
+        const size_t ySize =
+            static_cast<size_t>(frame->width) * static_cast<size_t>(frame->height);
+        const size_t requiredSize = ySize * 3 / 2;
+        if (frame->data.size() < requiredSize) {
+            SPDLOG_WARN("Frame data too small for OpenGL stream {}: {} < {}",
+                        slot + 1, frame->data.size(), requiredSize);
+            continue;
+        }
+
+        if (!uploadNv12Textures(frame->data.data(),
+                                frame->data.data() + ySize,
+                                frame->width,
+                                frame->height)) {
+            continue;
+        }
+
+        applyVideoViewportFor(frame->width,
+                              frame->height,
+                              static_cast<uint32_t>(slot),
+                              static_cast<uint32_t>(slotCount));
+        drawCurrentTextures();
+        renderedAny = true;
+    }
+
+    if (!renderedAny) {
+        return false;
+    }
+
+    activeVideoSlots_ = static_cast<uint32_t>(slotCount);
+    handleCaptureAfterRender();
+    drawOverlay();
+    SDL_GL_SwapWindow(window_);
+    return true;
+}
+
 void OpenGlVideoRenderer::setPlaybackStats(const PlaybackStats& stats) {
     playbackStats_ = stats;
+}
+
+void OpenGlVideoRenderer::setFaceOverlays(const std::vector<FaceDetectionResult>& overlays) {
+    faceOverlays_ = overlays;
 }
 
 bool OpenGlVideoRenderer::handleEvents() {
@@ -854,6 +960,9 @@ void OpenGlVideoRenderer::close() {
     overlayScreenSizeLocation_ = -1;
     overlayColorLocation_ = -1;
     overlayVertices_.clear();
+    textureWidth_ = 0;
+    textureHeight_ = 0;
+    activeVideoSlots_ = 1;
     width_ = 0;
     height_ = 0;
     initialized_ = false;
@@ -970,6 +1079,28 @@ void OpenGlVideoRenderer::applyVideoViewport() const {
     glViewport(viewport.x, viewport.y, viewport.width, viewport.height);
 }
 
+void OpenGlVideoRenderer::applyVideoViewportFor(int videoWidth,
+                                                int videoHeight,
+                                                uint32_t slotIndex,
+                                                uint32_t slotCount) const {
+    if (!window_) {
+        return;
+    }
+
+    int drawableWidth = 0;
+    int drawableHeight = 0;
+    SDL_GL_GetDrawableSize(window_, &drawableWidth, &drawableHeight);
+    const ViewportRect viewport =
+        calculateAspectFitViewport(drawableWidth,
+                                   drawableHeight,
+                                   videoWidth,
+                                   videoHeight,
+                                   slotIndex,
+                                   slotCount);
+
+    glViewport(viewport.x, viewport.y, viewport.width, viewport.height);
+}
+
 GLuint OpenGlVideoRenderer::compileShader(GLenum type, const char* source) {
     const GLuint shader = gl_.createShader(type);
     const GlChar* sourcePtr = source;
@@ -1060,6 +1191,8 @@ bool OpenGlVideoRenderer::createTextures() {
     glBindTexture(GL_TEXTURE_2D, textures_[1]);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RG8, width_ / 2, height_ / 2, 0,
                  GL_RG, GL_UNSIGNED_BYTE, nullptr);
+    textureWidth_ = width_;
+    textureHeight_ = height_;
 
 #ifdef RTSP_ENABLE_CUDA_INTEROP
     gl_.genBuffers(static_cast<GLsizei>(pixelUnpackBuffers_.size()), pixelUnpackBuffers_.data());
@@ -1102,9 +1235,19 @@ bool OpenGlVideoRenderer::renderNv12(const uint8_t* y, const uint8_t* uv,
         return false;
     }
 
-    if (width != width_ || height != height_) {
-        SPDLOG_ERROR("Frame size {}x{} does not match texture size {}x{}",
-                     width, height, width_, height_);
+    if (!uploadNv12Textures(y, uv, width, height)) {
+        return false;
+    }
+
+    activeVideoSlots_ = 1;
+    return finishFrameRender();
+}
+
+bool OpenGlVideoRenderer::uploadNv12Textures(const uint8_t* y,
+                                             const uint8_t* uv,
+                                             int width,
+                                             int height) {
+    if (!initialized_ || !y || !uv || width <= 0 || height <= 0) {
         return false;
     }
 
@@ -1113,6 +1256,26 @@ bool OpenGlVideoRenderer::renderNv12(const uint8_t* y, const uint8_t* uv,
     gl_.activeTexture(GL_TEXTURE0);
     gl_.bindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
     glBindTexture(GL_TEXTURE_2D, textures_[0]);
+
+    gl_.activeTexture(GL_TEXTURE1);
+    glBindTexture(GL_TEXTURE_2D, textures_[1]);
+
+    if (textureWidth_ != width || textureHeight_ != height) {
+        gl_.activeTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, textures_[0]);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_R8, width, height, 0,
+                     GL_RED, GL_UNSIGNED_BYTE, nullptr);
+
+        gl_.activeTexture(GL_TEXTURE1);
+        glBindTexture(GL_TEXTURE_2D, textures_[1]);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RG8, width / 2, height / 2, 0,
+                     GL_RG, GL_UNSIGNED_BYTE, nullptr);
+        textureWidth_ = width;
+        textureHeight_ = height;
+    }
+
+    gl_.activeTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, textures_[0]);
     glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, width, height,
                     GL_RED, GL_UNSIGNED_BYTE, y);
 
@@ -1120,8 +1283,17 @@ bool OpenGlVideoRenderer::renderNv12(const uint8_t* y, const uint8_t* uv,
     glBindTexture(GL_TEXTURE_2D, textures_[1]);
     glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, width / 2, height / 2,
                     GL_RG, GL_UNSIGNED_BYTE, uv);
+    return true;
+}
 
-    return finishFrameRender();
+void OpenGlVideoRenderer::drawCurrentTextures() {
+    gl_.activeTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, textures_[0]);
+    gl_.activeTexture(GL_TEXTURE1);
+    glBindTexture(GL_TEXTURE_2D, textures_[1]);
+    gl_.bindVertexArray(videoVao_);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    gl_.bindVertexArray(0);
 }
 
 bool OpenGlVideoRenderer::renderCudaNv12(const MediaFrame& frame) {
@@ -1166,13 +1338,7 @@ bool OpenGlVideoRenderer::finishFrameRender() {
     glClear(GL_COLOR_BUFFER_BIT);
     applyVideoViewport();
 
-    gl_.activeTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_2D, textures_[0]);
-    gl_.activeTexture(GL_TEXTURE1);
-    glBindTexture(GL_TEXTURE_2D, textures_[1]);
-    gl_.bindVertexArray(videoVao_);
-    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
-    gl_.bindVertexArray(0);
+    drawCurrentTextures();
 
     handleCaptureAfterRender();
     drawOverlay();
@@ -1514,6 +1680,10 @@ void OpenGlVideoRenderer::drawOverlay() {
     }
 
     overlayVertices_.clear();
+    drawFaceOverlays(drawableWidth, drawableHeight);
+    flushOverlay(0.12F, 0.94F, 0.55F, 1.0F);
+
+    overlayVertices_.clear();
     drawRect(left - 6.0F, top - 6.0F, width, height);
     flushOverlay(0.0F, 0.0F, 0.0F, 0.62F);
 
@@ -1526,6 +1696,62 @@ void OpenGlVideoRenderer::drawOverlay() {
     flushOverlay(0.72F, 1.0F, 0.86F, 1.0F);
 
     glDisable(GL_BLEND);
+}
+
+void OpenGlVideoRenderer::drawFaceOverlays(int drawableWidth, int drawableHeight) {
+    if (faceOverlays_.empty()) {
+        return;
+    }
+
+    const float thickness = std::max(2.0F, static_cast<float>(drawableWidth) / 640.0F);
+
+    for (const FaceDetectionResult& result : faceOverlays_) {
+        if (result.streamIndex >= activeVideoSlots_ ||
+            result.frameWidth <= 0 ||
+            result.frameHeight <= 0) {
+            continue;
+        }
+
+        const auto viewport =
+            calculateAspectFitViewport(drawableWidth,
+                                       drawableHeight,
+                                       result.frameWidth,
+                                       result.frameHeight,
+                                       static_cast<uint32_t>(result.streamIndex),
+                                       activeVideoSlots_);
+        if (viewport.width <= 0 || viewport.height <= 0) {
+            continue;
+        }
+
+        const float scaleX = static_cast<float>(viewport.width) /
+                             static_cast<float>(result.frameWidth);
+        const float scaleY = static_cast<float>(viewport.height) /
+                             static_cast<float>(result.frameHeight);
+        const float viewportX = static_cast<float>(viewport.x);
+        const float viewportY = static_cast<float>(viewport.y);
+        for (const FaceBox& face : result.faces) {
+            drawRectOutline(viewportX + face.x * scaleX,
+                            viewportY + face.y * scaleY,
+                            face.width * scaleX,
+                            face.height * scaleY,
+                            thickness);
+        }
+    }
+}
+
+void OpenGlVideoRenderer::drawRectOutline(float x,
+                                          float y,
+                                          float width,
+                                          float height,
+                                          float thickness) {
+    if (width <= 0.0F || height <= 0.0F) {
+        return;
+    }
+
+    drawRect(x, y, width, thickness);
+    drawRect(x, y + height - thickness, width, thickness);
+    drawRect(x, y, thickness, height);
+    drawRect(x + width - thickness, y, thickness, height);
 }
 
 void OpenGlVideoRenderer::drawText(float x, float y, const std::string& text, float scale) {

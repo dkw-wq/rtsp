@@ -292,6 +292,7 @@ public:
     bool render(const std::shared_ptr<MediaFrame>& frame) override;
     bool render(const std::vector<std::shared_ptr<MediaFrame>>& frames) override;
     void setPlaybackStats(const PlaybackStats& stats) override;
+    void setFaceOverlays(const std::vector<FaceDetectionResult>& overlays) override;
     void setCommandCallback(std::function<void(RendererCommand)> callback) override;
     bool handleEvents() override;
     void close() override;
@@ -398,6 +399,8 @@ private:
                                 uint32_t slotCount) const;
     std::array<std::string, 13> makeStatusLines() const;
     void drawStatusLayout(VkCommandBuffer commandBuffer);
+    void drawFaceOverlays(VkCommandBuffer commandBuffer);
+    void drawRectOutline(float x, float y, float width, float height, float thickness);
     void drawText(float x, float y, const std::string& text, float scale);
     void drawRect(float x, float y, float width, float height);
     void flushOverlay(VkCommandBuffer commandBuffer,
@@ -422,6 +425,7 @@ private:
     int width_;
     int height_;
     PlaybackStats playbackStats_;
+    std::vector<FaceDetectionResult> faceOverlays_;
     std::string uploadPath_;
 
     VkInstance instance_;
@@ -470,6 +474,7 @@ private:
     std::shared_ptr<void> pendingCudaUploadFrameRef_;
 #endif
     VulkanBuffer overlayBackgroundBuffer_;
+    VulkanBuffer faceOverlayBuffer_;
     VulkanBuffer overlayBuffer_;
     VkBuffer uploadYBuffer_;
     VkBuffer uploadUvBuffer_;
@@ -506,6 +511,7 @@ VulkanVideoRenderer::VulkanVideoRenderer()
     , width_(0)
     , height_(0)
     , playbackStats_()
+    , faceOverlays_()
     , uploadPath_("CPU-STAGING")
     , instance_(VK_NULL_HANDLE)
     , surface_(VK_NULL_HANDLE)
@@ -551,6 +557,7 @@ VulkanVideoRenderer::VulkanVideoRenderer()
     , pendingCudaUploadFrameRef_()
 #endif
     , overlayBackgroundBuffer_()
+    , faceOverlayBuffer_()
     , overlayBuffer_()
     , uploadYBuffer_(VK_NULL_HANDLE)
     , uploadUvBuffer_(VK_NULL_HANDLE)
@@ -657,6 +664,10 @@ void VulkanVideoRenderer::setPlaybackStats(const PlaybackStats& stats) {
     playbackStats_ = stats;
 }
 
+void VulkanVideoRenderer::setFaceOverlays(const std::vector<FaceDetectionResult>& overlays) {
+    faceOverlays_ = overlays;
+}
+
 void VulkanVideoRenderer::setCommandCallback(std::function<void(RendererCommand)> callback) {
     commandCallback_ = std::move(callback);
 }
@@ -731,6 +742,7 @@ void VulkanVideoRenderer::close() {
     destroyCudaBuffer(cudaUvBuffer_);
 #endif
     destroyBuffer(overlayBackgroundBuffer_);
+    destroyBuffer(faceOverlayBuffer_);
     destroyBuffer(overlayBuffer_);
     destroyVideoImages();
 
@@ -2898,6 +2910,9 @@ void VulkanVideoRenderer::drawStatusLayout(VkCommandBuffer commandBuffer) {
     vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
 
     overlayVertices_.clear();
+    drawFaceOverlays(commandBuffer);
+
+    overlayVertices_.clear();
     drawRect(left - 6.0F, top - 6.0F, layoutWidth, layoutHeight);
     flushOverlay(commandBuffer, overlayBackgroundBuffer_, 0.0F, 0.0F, 0.0F, 0.62F);
 
@@ -2908,6 +2923,59 @@ void VulkanVideoRenderer::drawStatusLayout(VkCommandBuffer commandBuffer) {
         y += lineHeight;
     }
     flushOverlay(commandBuffer, overlayBuffer_, 0.72F, 1.0F, 0.86F, 1.0F);
+}
+
+void VulkanVideoRenderer::drawFaceOverlays(VkCommandBuffer commandBuffer) {
+    if (faceOverlays_.empty()) {
+        return;
+    }
+
+    const float thickness =
+        std::max(2.0F, static_cast<float>(swapchainExtent_.width) / 640.0F);
+
+    for (const FaceDetectionResult& result : faceOverlays_) {
+        if (result.streamIndex >= kMaxVideoSlots ||
+            result.streamIndex >= activeVideoSlots_ ||
+            result.frameWidth <= 0 ||
+            result.frameHeight <= 0) {
+            continue;
+        }
+
+        const VkViewport viewport =
+            activeVideoSlots_ > 1
+                ? videoViewportFor(result.frameWidth,
+                                   result.frameHeight,
+                                   static_cast<uint32_t>(result.streamIndex),
+                                   activeVideoSlots_)
+                : videoViewport();
+        const float scaleX = viewport.width / static_cast<float>(result.frameWidth);
+        const float scaleY = viewport.height / static_cast<float>(result.frameHeight);
+
+        for (const FaceBox& face : result.faces) {
+            drawRectOutline(viewport.x + face.x * scaleX,
+                            viewport.y + face.y * scaleY,
+                            face.width * scaleX,
+                            face.height * scaleY,
+                            thickness);
+        }
+    }
+
+    flushOverlay(commandBuffer, faceOverlayBuffer_, 0.12F, 0.94F, 0.55F, 1.0F);
+}
+
+void VulkanVideoRenderer::drawRectOutline(float x,
+                                          float y,
+                                          float width,
+                                          float height,
+                                          float thickness) {
+    if (width <= 0.0F || height <= 0.0F) {
+        return;
+    }
+
+    drawRect(x, y, width, thickness);
+    drawRect(x, y + height - thickness, width, thickness);
+    drawRect(x, y, thickness, height);
+    drawRect(x + width - thickness, y, thickness, height);
 }
 
 void VulkanVideoRenderer::drawText(float x, float y, const std::string& text, float scale) {

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "audio_player.hpp"
+#include "face_types.hpp"
 #include "rtsp_client.hpp"
 #include "sync_controller.hpp"
 
@@ -32,6 +33,7 @@ struct AppConfig {
     RtspConnectionOptions rtspOptions;
     AudioPlaybackOptions audioOptions;
     SyncOptions syncOptions;
+    FaceDetectionOptions faceDetectionOptions;
     size_t jitterMaxSize = 12;
     uint32_t jitterLatencyMs = 30;
     ReconnectOptions reconnectOptions;

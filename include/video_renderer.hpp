@@ -6,6 +6,7 @@
 #include <memory>
 #include <string>
 #include <vector>
+#include "face_types.hpp"
 #include "jitter_buffer.hpp"
 
 namespace rtsp {
@@ -55,7 +56,7 @@ public:
 
     /**
      * @brief 渲染多路视频帧
-     * @note 默认后端只渲染第一路；Vulkan 后端会做双路分屏。
+     * @note 默认后端只渲染第一路；OpenGL/Vulkan 后端会做双路分屏。
      */
     virtual bool render(const std::vector<std::shared_ptr<MediaFrame>>& frames) {
         if (frames.empty()) {
@@ -68,6 +69,13 @@ public:
      * @brief 更新播放状态叠加层数据
      */
     virtual void setPlaybackStats(const PlaybackStats& stats) = 0;
+
+    /**
+     * @brief 更新人脸检测框叠加层数据
+     */
+    virtual void setFaceOverlays(const std::vector<FaceDetectionResult>& overlays) {
+        (void)overlays;
+    }
 
     /**
      * @brief 设置渲染器快捷键命令回调

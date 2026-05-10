@@ -80,6 +80,8 @@ set(SOURCES
     src/audio_player.cpp
     src/frame_capture.cpp
     src/config_loader.cpp
+    src/face_analyzer.cpp
+    src/face_detector.cpp
     src/sync_controller.cpp
     src/stream_session.cpp
     src/video_renderer.cpp
@@ -93,6 +95,9 @@ set(HEADERS
     include/audio_player.hpp
     include/frame_capture.hpp
     include/config_loader.hpp
+    include/face_analyzer.hpp
+    include/face_detector.hpp
+    include/face_types.hpp
     include/sync_controller.hpp
     include/stream_session.hpp
     include/video_renderer.hpp
@@ -149,6 +154,23 @@ target_link_libraries(rtsp_player
 if(CUDAToolkit_FOUND)
     target_link_libraries(rtsp_player CUDA::cudart)
 endif()
+
+enable_testing()
+
+add_executable(rtsp_unit_tests
+    tests/unit_tests.cpp
+    src/jitter_buffer.cpp
+    src/config_loader.cpp
+    src/sync_controller.cpp
+    src/audio_player.cpp
+)
+target_compile_definitions(rtsp_unit_tests PRIVATE SDL_MAIN_HANDLED)
+target_link_libraries(rtsp_unit_tests
+    $<IF:$<TARGET_EXISTS:SDL2::SDL2>,SDL2::SDL2,SDL2::SDL2-static>
+    yaml-cpp::yaml-cpp
+    spdlog::spdlog
+)
+add_test(NAME rtsp_unit_tests COMMAND rtsp_unit_tests)
 
 # Install target
 install(TARGETS rtsp_player DESTINATION bin)

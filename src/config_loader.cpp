@@ -212,6 +212,36 @@ AppConfig loadAppConfig(const std::string& path) {
                 config.syncOptions.audioOffsetMs = syncConfig["audio_offset_ms"].as<int>();
             }
         }
+        if (root["face_detection"]) {
+            const auto faceConfig = root["face_detection"];
+            if (faceConfig["enabled"]) {
+                config.faceDetectionOptions.enabled = faceConfig["enabled"].as<bool>();
+            }
+            if (faceConfig["backend"]) {
+                config.faceDetectionOptions.backend = faceConfig["backend"].as<std::string>();
+            }
+            if (faceConfig["model"]) {
+                config.faceDetectionOptions.modelPath = faceConfig["model"].as<std::string>();
+            }
+            assignPositiveInt(faceConfig, "input_width",
+                              config.faceDetectionOptions.inputWidth);
+            assignPositiveInt(faceConfig, "input_height",
+                              config.faceDetectionOptions.inputHeight);
+            assignPositiveInt(faceConfig, "detect_every_n_frames",
+                              config.faceDetectionOptions.detectEveryNFrames);
+            if (faceConfig["score_threshold"]) {
+                const float value = faceConfig["score_threshold"].as<float>();
+                if (value >= 0.0F && value <= 1.0F) {
+                    config.faceDetectionOptions.scoreThreshold = value;
+                }
+            }
+            if (faceConfig["nms_threshold"]) {
+                const float value = faceConfig["nms_threshold"].as<float>();
+                if (value >= 0.0F && value <= 1.0F) {
+                    config.faceDetectionOptions.nmsThreshold = value;
+                }
+            }
+        }
         if (root["reconnect"]) {
             const auto reconnectConfig = root["reconnect"];
             if (reconnectConfig["enabled"]) {

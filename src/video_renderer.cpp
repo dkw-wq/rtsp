@@ -2,6 +2,9 @@
 #include "video_renderer.hpp"
 #include <spdlog/spdlog.h>
 
+#include <algorithm>
+#include <cmath>
+
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -45,6 +48,7 @@ public:
     bool initialize(int width, int height, const std::string& title) override;
     bool render(const std::shared_ptr<MediaFrame>& frame) override;
     void setPlaybackStats(const PlaybackStats& stats) override;
+    void setFaceOverlays(const std::vector<FaceDetectionResult>& overlays) override;
     bool handleEvents() override;
     void close() override;
 
@@ -59,6 +63,7 @@ private:
     void handleCaptureAfterRender();
     void saveScreenshot(const RgbFrame& frame);
     void toggleRecording();
+    void drawFaceOverlays(int outputWidth, int outputHeight);
 
     SDL_Window* window_;
     SDL_Renderer* renderer_;
@@ -70,6 +75,7 @@ private:
     bool screenshotRequested_;
     int recordingFps_;
     RgbVideoRecorder recorder_;
+    std::vector<FaceDetectionResult> faceOverlays_;
     bool fKeyDown_;
     bool sKeyDown_;
     bool rKeyDown_;
@@ -85,6 +91,7 @@ SdlVideoRenderer::SdlVideoRenderer()
     , screenshotRequested_(false)
     , recordingFps_(15)
     , recorder_()
+    , faceOverlays_()
     , fKeyDown_(false)
     , sKeyDown_(false)
     , rKeyDown_(false)
@@ -181,6 +188,10 @@ bool SdlVideoRenderer::render(const std::shared_ptr<MediaFrame>& frame) {
 
 void SdlVideoRenderer::setPlaybackStats(const PlaybackStats&) {}
 
+void SdlVideoRenderer::setFaceOverlays(const std::vector<FaceDetectionResult>& overlays) {
+    faceOverlays_ = overlays;
+}
+
 bool SdlVideoRenderer::renderNv12(const uint8_t* y, const uint8_t* uv,
                                   int width, int height) {
     if (!initialized_ || !y || !uv) {
@@ -213,6 +224,11 @@ bool SdlVideoRenderer::renderNv12(const uint8_t* y, const uint8_t* uv,
 
     // 复制纹理到渲染器
     SDL_RenderCopy(renderer_, texture_, nullptr, nullptr);
+
+    int outputWidth = 0;
+    int outputHeight = 0;
+    SDL_GetRendererOutputSize(renderer_, &outputWidth, &outputHeight);
+    drawFaceOverlays(outputWidth, outputHeight);
 
     handleCaptureAfterRender();
 
@@ -268,6 +284,33 @@ bool SdlVideoRenderer::handleKeyboardShortcuts() {
     }
 
     return true;
+}
+
+void SdlVideoRenderer::drawFaceOverlays(int outputWidth, int outputHeight) {
+    if (outputWidth <= 0 || outputHeight <= 0 || faceOverlays_.empty()) {
+        return;
+    }
+
+    SDL_SetRenderDrawColor(renderer_, 30, 240, 140, 255);
+    for (const FaceDetectionResult& result : faceOverlays_) {
+        if (result.streamIndex != 0 || result.frameWidth <= 0 || result.frameHeight <= 0) {
+            continue;
+        }
+
+        const float scaleX = static_cast<float>(outputWidth) /
+                             static_cast<float>(result.frameWidth);
+        const float scaleY = static_cast<float>(outputHeight) /
+                             static_cast<float>(result.frameHeight);
+        for (const FaceBox& face : result.faces) {
+            SDL_Rect rect{};
+            rect.x = static_cast<int>(std::lround(face.x * scaleX));
+            rect.y = static_cast<int>(std::lround(face.y * scaleY));
+            rect.w = std::max(1, static_cast<int>(std::lround(face.width * scaleX)));
+            rect.h = std::max(1, static_cast<int>(std::lround(face.height * scaleY)));
+            SDL_RenderDrawRect(renderer_, &rect);
+        }
+    }
+    SDL_SetRenderDrawColor(renderer_, 0, 0, 0, 255);
 }
 
 void SdlVideoRenderer::close() {

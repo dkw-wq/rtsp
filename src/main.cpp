@@ -1,4 +1,5 @@
 #include "config_loader.hpp"
+#include "face_analyzer.hpp"
 #include "stream_session.hpp"
 #include "sync_controller.hpp"
 #include "video_renderer.hpp"
@@ -111,21 +112,32 @@ void logConfig(const rtsp::AppConfig& config) {
                 config.reconnectOptions.enabled,
                 config.reconnectOptions.initialDelayMs,
                 config.reconnectOptions.maxDelayMs);
+    SPDLOG_INFO("Face detection: enabled={}, backend={}, model={}, input={}x{}, every_n_frames={}",
+                config.faceDetectionOptions.enabled,
+                config.faceDetectionOptions.backend,
+                config.faceDetectionOptions.modelPath,
+                config.faceDetectionOptions.inputWidth,
+                config.faceDetectionOptions.inputHeight,
+                config.faceDetectionOptions.detectEveryNFrames);
 }
 
 int runMultiStream(const rtsp::AppConfig& config) {
     const size_t streamCount = std::min<size_t>(config.rtspUrls.size(), 2);
     const std::string rendererBackend = rtsp::toLower(config.rendererName);
-    if (rendererBackend != "vulkan" && rendererBackend != "vk") {
-        SPDLOG_WARN("Multi-stream display currently uses Vulkan; ignoring renderer '{}'",
+    const bool usesOpenGlRenderer = rendererBackend == "opengl" || rendererBackend == "gl";
+    const bool usesVulkanRenderer = rendererBackend == "vulkan" || rendererBackend == "vk";
+    if (!usesOpenGlRenderer && !usesVulkanRenderer) {
+        SPDLOG_WARN("Multi-stream display supports OpenGL/Vulkan; using Vulkan instead of '{}'",
                     config.rendererName);
     }
     if (config.rtspUrls.size() > streamCount) {
         SPDLOG_WARN("Only the first {} RTSP streams are used in this build", streamCount);
     }
 
-    auto renderer = createRenderer(config, true);
+    auto renderer = createRenderer(config, !usesOpenGlRenderer);
     auto audioPlayer = std::make_unique<rtsp::AudioPlayer>(config.audioOptions);
+    auto faceAnalyzer = std::make_unique<rtsp::FaceAnalyzer>();
+    faceAnalyzer->initialize(config.faceDetectionOptions);
     std::vector<std::unique_ptr<rtsp::StreamSession>> streams;
     streams.reserve(streamCount);
 
@@ -280,6 +292,7 @@ int runMultiStream(const rtsp::AppConfig& config) {
                 }
 
                 stream.latestFrame = stream.pendingFrame;
+                faceAnalyzer->submitFrame(stream.latestFrame, index);
                 stream.pendingFrame.reset();
                 hasNewVideoFrame = true;
             }
@@ -309,6 +322,7 @@ int runMultiStream(const rtsp::AppConfig& config) {
 
         if (hasAnyFrame && hasNewVideoFrame) {
             renderer->setPlaybackStats(streams.front()->stats);
+            renderer->setFaceOverlays(faceAnalyzer->latestResults());
             renderer->render(frames);
 
             for (auto& stream : streams) {
@@ -338,6 +352,8 @@ int runSingleStream(const rtsp::AppConfig& config) {
 
     auto renderer = createRenderer(config, false);
     auto audioPlayer = std::make_unique<rtsp::AudioPlayer>(config.audioOptions);
+    auto faceAnalyzer = std::make_unique<rtsp::FaceAnalyzer>();
+    faceAnalyzer->initialize(config.faceDetectionOptions);
 
     rtsp::StreamSessionOptions options;
     options.url = config.rtspUrl;
@@ -346,7 +362,11 @@ int runSingleStream(const rtsp::AppConfig& config) {
     options.audioEnabled = config.audioOptions.enabled;
     options.videoEnabled = true;
 #ifdef RTSP_ENABLE_CUDA_INTEROP
-    options.hardwareFrameOutput = usesOpenGlRenderer || usesVulkanRenderer;
+    options.hardwareFrameOutput =
+        (usesOpenGlRenderer || usesVulkanRenderer) && !config.faceDetectionOptions.enabled;
+    if (config.faceDetectionOptions.enabled && (usesOpenGlRenderer || usesVulkanRenderer)) {
+        SPDLOG_INFO("Hardware frame passthrough disabled while face detection is enabled");
+    }
 #else
     options.hardwareFrameOutput = false;
 #endif
@@ -475,6 +495,8 @@ int runSingleStream(const rtsp::AppConfig& config) {
             stream->refreshStats();
             stream->stats.syncDroppedFrames = sync.droppedFrames();
             renderer->setPlaybackStats(stream->stats);
+            faceAnalyzer->submitFrame(frame, 0);
+            renderer->setFaceOverlays(faceAnalyzer->latestResults());
             if (renderer->render(frame)) {
                 ++renderedFramesSinceFpsUpdate;
             }
