@@ -28,6 +28,31 @@ hw_decode: "cuda"
 
 如果当前 FFmpeg、驱动或显卡不支持 CUDA 硬解，会自动尝试 d3d11va/dxva2，再回退到软件解码。
 
+启用 SCRFD ONNX CUDA 人脸检测实验后端：
+
+```yaml
+face_detection:
+  enabled: true
+  backend: "onnx_cuda"
+```
+
+`onnx_cuda` 会先检查 ONNX Runtime 的 `CUDAExecutionProvider`，可用时使用 GPU 推理；不可用、初始化失败或缺少 provider DLL 时会记录 warning 并自动回退到 `onnx_cpu`。Windows 下需要确保 `onnxruntime_providers_cuda.dll`、`onnxruntime_providers_shared.dll` 以及匹配的 CUDA/cuDNN 运行库能被 exe 找到。
+
+检查 CUDA provider 是否真的可用：
+
+```powershell
+cmake --build build-vcpkg --config Release --target onnx_cuda_probe
+$env:Path = "C:\Program Files\NVIDIA\CUDNN\v9.22\bin\13.2\x64;$env:Path"
+.\build-vcpkg\bin\Release\onnx_cuda_probe.exe models\det_500m.onnx
+```
+
+看到下面两行就表示 ONNX Runtime CUDA session 已经创建成功：
+
+```text
+available_providers=CUDAExecutionProvider,CPUExecutionProvider
+cuda_session=ok
+```
+
 OpenGL 会保持视频原始宽高比，窗口比例不匹配时自动居中并显示黑边。
 
 OpenGL 和 Vulkan 渲染路径都使用 NV12 两纹理：Y 平面 + 交错 UV 平面。NV12 更贴近硬件解码输出，避免把 UV 拆成两个纹理后再上传。

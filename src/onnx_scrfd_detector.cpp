@@ -13,6 +13,7 @@
 #include <numeric>
 #include <stdexcept>
 #include <string>
+#include <unordered_map>
 #include <utility>
 
 #ifdef _WIN32
@@ -179,6 +180,39 @@ bool containsAny(const std::string& value, std::initializer_list<const char*> ne
     return false;
 }
 
+bool providerAvailable(const std::string& providerName) {
+    try {
+        const std::vector<std::string> providers = Ort::GetAvailableProviders();
+        return std::find(providers.begin(), providers.end(), providerName) != providers.end();
+    } catch (const Ort::Exception& ex) {
+        SPDLOG_WARN("Failed to query ONNX Runtime providers: {}", ex.what());
+        return false;
+    }
+}
+
+bool appendCudaProvider(Ort::SessionOptions& sessionOptions) {
+    if (!providerAvailable("CUDAExecutionProvider")) {
+        SPDLOG_WARN("ONNX Runtime CUDAExecutionProvider is not available; falling back to CPU");
+        return false;
+    }
+
+    try {
+        Ort::CUDAProviderOptions cudaOptions;
+        cudaOptions.Update({
+            {"device_id", "0"},
+            {"arena_extend_strategy", "kNextPowerOfTwo"},
+            {"cudnn_conv_algo_search", "EXHAUSTIVE"},
+            {"do_copy_in_default_stream", "1"},
+        });
+        sessionOptions.AppendExecutionProvider_CUDA_V2(*cudaOptions);
+        return true;
+    } catch (const Ort::Exception& ex) {
+        SPDLOG_WARN("Failed to append ONNX Runtime CUDA provider: {}; falling back to CPU",
+                    ex.what());
+        return false;
+    }
+}
+
 int clampInt(int value, int minValue, int maxValue) {
     return std::max(minValue, std::min(value, maxValue));
 }
@@ -249,6 +283,13 @@ public:
         sessionOptions.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_EXTENDED);
         sessionOptions.SetIntraOpNumThreads(1);
 
+        const std::string requestedBackend = toLower(options_.backend);
+        const bool wantsCuda = requestedBackend == "onnx_cuda" || requestedBackend == "cuda";
+        activeBackendName_ = "onnx_cpu";
+        if (wantsCuda && appendCudaProvider(sessionOptions)) {
+            activeBackendName_ = "onnx_cuda";
+        }
+
         try {
 #ifdef _WIN32
             ScopedStderrSilencer onnxSchemaNoiseSilencer;
@@ -294,8 +335,11 @@ public:
             outputNamePtrs_.push_back(name.c_str());
         }
 
-        SPDLOG_INFO("SCRFD ONNX initialized: model={}, inputs={}, outputs={}",
-                    options_.modelPath, inputNames_.size(), outputNames_.size());
+        SPDLOG_INFO("SCRFD ONNX initialized: backend={}, model={}, inputs={}, outputs={}",
+                    activeBackendName_,
+                    options_.modelPath,
+                    inputNames_.size(),
+                    outputNames_.size());
         return true;
     }
 
@@ -360,7 +404,7 @@ public:
     }
 
     std::string backendName() const {
-        return "onnx_cpu";
+        return activeBackendName_;
     }
 
 private:
@@ -510,6 +554,7 @@ private:
     }
 
     FaceDetectionOptions options_;
+    std::string activeBackendName_ = "onnx_cpu";
     std::unique_ptr<Ort::Env> env_;
     std::unique_ptr<Ort::Session> session_;
     std::vector<std::string> inputNames_;

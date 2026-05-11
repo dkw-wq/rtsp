@@ -66,10 +66,10 @@ renderer: "vulkan"
 # 硬件解码: none, cuda
 hw_decode: "cuda"
 
-# 人脸检测 overlay。当前接入 SCRFD ONNX CPU 后端，渲染线程只画最近一次检测结果。
+# 人脸检测 overlay。onnx_cuda 会优先尝试 ONNX Runtime CUDA Provider，失败自动回退 CPU。
 face_detection:
   enabled: true
-  backend: "onnx_cpu"   # onnx_cpu, onnx_cuda, tensorrt
+  backend: "onnx_cuda"   # onnx_cpu, onnx_cuda, tensorrt
   model: "models/det_500m.onnx"
   input_width: 640
   input_height: 640
