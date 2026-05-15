@@ -173,6 +173,8 @@ sync:
 
 .\scripts\start_webcam_rtsp.ps1 -Dual
 
+如果没有插入第二个 USB 摄像头，脚本会自动回退为单路推流，并输出单路播放器启动命令；播放器在配置为双路时也会在第二路 RTSP 初次连接失败后切回单路播放管线。
+
 CUDA 人脸检测运行方式：
 
 先安装带 NVDEC/NVCODEC 支持的 FFmpeg 依赖：

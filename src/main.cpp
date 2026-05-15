@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <ctime>
 #include <filesystem>
@@ -181,8 +182,10 @@ void logConfig(const rtsp::AppConfig& config) {
                 config.faceDetectionOptions.detectEveryNFrames);
 }
 
+int runSingleStream(const rtsp::AppConfig& config);
+
 int runMultiStream(const rtsp::AppConfig& config) {
-    const size_t streamCount = std::min<size_t>(config.rtspUrls.size(), 2);
+    const size_t requestedStreamCount = std::min<size_t>(config.rtspUrls.size(), 2);
     const std::string rendererBackend = rtsp::toLower(config.rendererName);
     const bool usesOpenGlRenderer = rendererBackend == "opengl" || rendererBackend == "gl";
     const bool usesVulkanRenderer = rendererBackend == "vulkan" || rendererBackend == "vk";
@@ -190,8 +193,9 @@ int runMultiStream(const rtsp::AppConfig& config) {
         SPDLOG_WARN("Multi-stream display supports OpenGL/Vulkan; using Vulkan instead of '{}'",
                     config.rendererName);
     }
-    if (config.rtspUrls.size() > streamCount) {
-        SPDLOG_WARN("Only the first {} RTSP streams are used in this build", streamCount);
+    if (config.rtspUrls.size() > requestedStreamCount) {
+        SPDLOG_WARN("Only the first {} RTSP streams are used in this build",
+                    requestedStreamCount);
     }
 
     auto renderer = createRenderer(config, !usesOpenGlRenderer);
@@ -199,9 +203,9 @@ int runMultiStream(const rtsp::AppConfig& config) {
     auto faceAnalyzer = std::make_unique<rtsp::FaceAnalyzer>();
     faceAnalyzer->initialize(config.faceDetectionOptions);
     std::vector<std::unique_ptr<rtsp::StreamSession>> streams;
-    streams.reserve(streamCount);
+    streams.reserve(requestedStreamCount);
 
-    for (size_t index = 0; index < streamCount; ++index) {
+    for (size_t index = 0; index < requestedStreamCount; ++index) {
         rtsp::StreamSessionOptions options;
         options.url = config.rtspUrls[index];
         options.connectionOptions = config.rtspOptions;
@@ -229,12 +233,53 @@ int runMultiStream(const rtsp::AppConfig& config) {
         options.audioPlayer = audioPlayer.get();
         options.jitterMaxSize = config.jitterMaxSize;
         options.jitterLatencyMs = config.jitterLatencyMs;
-        options.streamIndex = streamCount;
+        options.streamIndex = requestedStreamCount;
         audioStream = std::make_unique<rtsp::StreamSession>(options);
     }
 
-    for (auto& stream : streams) {
-        if (!connectStreamWithRetry(*stream, config.reconnectOptions, *renderer, false, true)) {
+    if (streams.empty()) {
+        SPDLOG_ERROR("No RTSP streams configured");
+        return -1;
+    }
+
+    if (!connectStreamWithRetry(*streams.front(), config.reconnectOptions, *renderer, false, true)) {
+        return -1;
+    }
+
+    for (size_t index = 1; index < streams.size();) {
+        auto& stream = streams[index];
+        if (stream->connect()) {
+            stream->start();
+            ++index;
+            continue;
+        }
+
+        SPDLOG_WARN("Optional RTSP stream {} unavailable: {}; continuing with single-stream display",
+                    index + 1,
+                    config.rtspUrls[index]);
+        stream->stopAndDisconnect();
+        streams.erase(streams.begin() + static_cast<std::ptrdiff_t>(index));
+    }
+
+    if (streams.empty()) {
+        SPDLOG_ERROR("No RTSP streams are available");
+        return -1;
+    }
+
+    if (requestedStreamCount > 1 && streams.size() == 1) {
+        SPDLOG_INFO("Dual-view fallback active: switching to single-stream pipeline");
+        streams.front()->stopAndDisconnect();
+
+        auto fallbackConfig = config;
+        fallbackConfig.rtspUrl = config.rtspUrls.front();
+        fallbackConfig.rtspUrls = {fallbackConfig.rtspUrl};
+        fallbackConfig.rtspUrlsConfigured = false;
+        return runSingleStream(fallbackConfig);
+    }
+
+    for (size_t index = 0; index < streams.size(); ++index) {
+        if (!streams[index]->isRunning()) {
+            SPDLOG_ERROR("RTSP stream {} is not running after initial connection", index + 1);
             return -1;
         }
     }
@@ -257,18 +302,20 @@ int runMultiStream(const rtsp::AppConfig& config) {
     }
     windowWidth = std::clamp(windowWidth, 640, 1920);
     windowHeight = std::clamp(windowHeight, 360, 1080);
-    if (!renderer->initialize(windowWidth, windowHeight, "RTSP Player - Dual View")) {
-        SPDLOG_ERROR("Failed to initialize Vulkan multi-stream renderer");
+    const std::string windowTitle =
+        streams.size() > 1 ? "RTSP Player - Dual View" : "RTSP Player";
+    if (!renderer->initialize(windowWidth, windowHeight, windowTitle)) {
+        SPDLOG_ERROR("Failed to initialize multi-stream renderer");
         return -1;
     }
 
-    SPDLOG_INFO("Dual RTSP streaming started, press ESC or Q to quit");
+    SPDLOG_INFO("{} RTSP stream(s) started, press ESC or Q to quit", streams.size());
 
     while (g_running && renderer->handleEvents()) {
         bool hasNewVideoFrame = false;
         bool waitingForSync = false;
 
-        for (size_t index = 0; index < streamCount; ++index) {
+        for (size_t index = 0; index < streams.size(); ++index) {
             auto& stream = *streams[index];
             if (!stream.isRunning()) {
                 SPDLOG_WARN("RTSP stream {} receive loop stopped", index + 1);
@@ -373,7 +420,7 @@ int runMultiStream(const rtsp::AppConfig& config) {
         }
 
         std::vector<std::shared_ptr<rtsp::MediaFrame>> frames;
-        frames.reserve(streamCount);
+        frames.reserve(streams.size());
         bool hasAnyFrame = false;
         for (const auto& stream : streams) {
             frames.push_back(stream->latestFrame);

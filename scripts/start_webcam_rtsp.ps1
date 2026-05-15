@@ -21,10 +21,81 @@ $mediaMtxDir = Join-Path $workspaceRoot "mediamtx"
 $mediaMtxExe = Join-Path $mediaMtxDir "mediamtx.exe"
 $logDir = Join-Path $mediaMtxDir "logs"
 $mediaMtxPidFile = Join-Path $logDir "mediamtx.pid"
+
+function Get-DShowVideoDevices {
+    $previousErrorActionPreference = $ErrorActionPreference
+    $previousNativeErrorPreference = $null
+    $hasNativeErrorPreference = Test-Path Variable:\PSNativeCommandUseErrorActionPreference
+    if ($hasNativeErrorPreference) {
+        $previousNativeErrorPreference = $PSNativeCommandUseErrorActionPreference
+    }
+
+    try {
+        $ErrorActionPreference = "Continue"
+        if ($hasNativeErrorPreference) {
+            $PSNativeCommandUseErrorActionPreference = $false
+        }
+        $output = & ffmpeg -hide_banner -list_devices true -f dshow -i dummy 2>&1
+    } finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+        if ($hasNativeErrorPreference) {
+            $PSNativeCommandUseErrorActionPreference = $previousNativeErrorPreference
+        }
+    }
+
+    $devices = @()
+    $inVideoSection = $false
+
+    foreach ($line in $output) {
+        $text = $line.ToString()
+        if ($text -match '"([^"]+)"\s+\(video\)') {
+            $devices += $Matches[1]
+            continue
+        }
+        if ($text -match "DirectShow video devices") {
+            $inVideoSection = $true
+            continue
+        }
+        if ($text -match "DirectShow audio devices") {
+            $inVideoSection = $false
+            continue
+        }
+        if ($inVideoSection -and $text -match '"([^"]+)"') {
+            $devices += $Matches[1]
+        }
+    }
+
+    return $devices | Select-Object -Unique
+}
+
+function Test-DShowVideoDevice {
+    param(
+        [Parameter(Mandatory = $true)][string]$Name,
+        [string[]]$Devices
+    )
+
+    return [bool]($Devices | Where-Object { $_ -eq $Name } | Select-Object -First 1)
+}
+
+$dualEnabled = $Dual
+if ($Dual) {
+    $videoDevices = Get-DShowVideoDevices
+    if (!(Test-DShowVideoDevice -Name $SecondCameraName -Devices $videoDevices)) {
+        Write-Warning "Second camera '$SecondCameraName' was not found. Falling back to single-camera RTSP publishing."
+        if ($videoDevices.Count -gt 0) {
+            Write-Host "Available DirectShow video devices:"
+            foreach ($device in $videoDevices) {
+                Write-Host "  - $device"
+            }
+        }
+        $dualEnabled = $false
+    }
+}
+
 $ffmpegPidFiles = @(
     (Join-Path $logDir "ffmpeg-webcam.pid")
 )
-if ($Dual) {
+if ($dualEnabled) {
     $ffmpegPidFiles += (Join-Path $logDir "ffmpeg-webcam2.pid")
     if (!$NoAudio -and ![string]::IsNullOrWhiteSpace($AudioName)) {
         $ffmpegPidFiles += (Join-Path $logDir "ffmpeg-audio.pid")
@@ -157,13 +228,13 @@ $publishers += @{
         -PidFile $ffmpegPidFiles[0] `
         -LogPrefix "ffmpeg-webcam" `
         -AudioDeviceName $AudioName `
-        -DisableAudio:($NoAudio -or $Dual) `
+        -DisableAudio:($NoAudio -or $dualEnabled) `
         -DebugLog:$FfmpegDebug
     Url = $RtspUrl
     Log = Join-Path $logDir "ffmpeg-webcam.stderr.log"
 }
 
-if ($Dual) {
+if ($dualEnabled) {
     $secondSize = if ([string]::IsNullOrWhiteSpace($SecondVideoSize)) {
         $VideoSize
     } else {
@@ -222,9 +293,14 @@ foreach ($publisher in $publishers) {
     Write-Host "RTSP URL: $($publisher.Url)"
 }
 
-if ($Dual) {
+if ($dualEnabled) {
     Write-Host "Player config rtsp_urls:"
-    foreach ($publisher in $publishers) {
-        Write-Host "  - `"$($publisher.Url)`""
+    Write-Host "  - `"$RtspUrl`""
+    Write-Host "  - `"$SecondRtspUrl`""
+    if (!$NoAudio -and ![string]::IsNullOrWhiteSpace($AudioName)) {
+        Write-Host "Player config audio_rtsp_url: `"$AudioRtspUrl`""
     }
+} else {
+    Write-Host "Player command:"
+    Write-Host "  .\build-vcpkg\bin\Release\rtsp_player.exe `"$RtspUrl`""
 }
