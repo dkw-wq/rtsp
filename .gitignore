@@ -1,3 +1,5 @@
 build-vcpkg/
 cmake/
 captures/
+logs/*
+!logs/.gitkeep

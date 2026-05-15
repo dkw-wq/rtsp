@@ -173,6 +173,9 @@ sync:
 
 .\scripts\start_webcam_rtsp.ps1 -Dual
 
+以cuda人脸检测用：
+E:\vcpkg\vcpkg.exe install "ffmpeg[nvcodec]:x64-windows" --recurse
+
 默认会输出：
 
 ```yaml

@@ -4,13 +4,19 @@
 #include "sync_controller.hpp"
 #include "video_renderer.hpp"
 
+#include <spdlog/sinks/basic_file_sink.h>
+#include <spdlog/sinks/stdout_color_sinks.h>
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <ctime>
+#include <filesystem>
+#include <iomanip>
 #include <memory>
+#include <sstream>
 #include <string>
 #include <thread>
 #include <vector>
@@ -18,6 +24,60 @@
 namespace {
 
 static bool g_running = true;
+
+std::string makeTimestampedLogFileName() {
+    const auto now = std::chrono::system_clock::now();
+    const auto time = std::chrono::system_clock::to_time_t(now);
+    const auto milliseconds = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                  now.time_since_epoch()) %
+                              1000;
+
+    std::tm localTime{};
+#ifdef _WIN32
+    localtime_s(&localTime, &time);
+#else
+    localtime_r(&time, &localTime);
+#endif
+
+    std::ostringstream stream;
+    stream << "rtsp_player_" << std::put_time(&localTime, "%Y%m%d_%H%M%S") << '_'
+           << std::setw(3) << std::setfill('0') << milliseconds.count() << ".log";
+    return stream.str();
+}
+
+std::filesystem::path initializeLogging() {
+    const auto logDir = std::filesystem::path("logs");
+    const auto logFile = logDir / makeTimestampedLogFileName();
+
+    auto consoleSink = std::make_shared<spdlog::sinks::stdout_color_sink_mt>();
+    try {
+        std::filesystem::create_directories(logDir);
+        auto fileSink = std::make_shared<spdlog::sinks::basic_file_sink_mt>(
+            logFile.string(), true);
+        auto logger = std::make_shared<spdlog::logger>(
+            "rtsp_player", spdlog::sinks_init_list{consoleSink, fileSink});
+        spdlog::set_default_logger(logger);
+        spdlog::set_pattern("[%Y-%m-%d %H:%M:%S.%e] [%^%l%$] %v");
+        spdlog::flush_on(spdlog::level::info);
+        SPDLOG_INFO("Log file: {}", logFile.string());
+        spdlog::default_logger()->flush();
+        return logFile;
+    } catch (const spdlog::spdlog_ex& ex) {
+        auto logger = std::make_shared<spdlog::logger>("rtsp_player", consoleSink);
+        spdlog::set_default_logger(logger);
+        spdlog::set_pattern("[%Y-%m-%d %H:%M:%S.%e] [%^%l%$] %v");
+        spdlog::flush_on(spdlog::level::info);
+        SPDLOG_WARN("Failed to open log file '{}': {}", logFile.string(), ex.what());
+    } catch (const std::filesystem::filesystem_error& ex) {
+        auto logger = std::make_shared<spdlog::logger>("rtsp_player", consoleSink);
+        spdlog::set_default_logger(logger);
+        spdlog::set_pattern("[%Y-%m-%d %H:%M:%S.%e] [%^%l%$] %v");
+        spdlog::flush_on(spdlog::level::info);
+        SPDLOG_WARN("Failed to create log directory '{}': {}", logDir.string(), ex.what());
+    }
+
+    return {};
+}
 
 bool handleEventsDuringDelay(rtsp::VideoRenderer& renderer, uint32_t delayMs) {
     const auto deadline =
@@ -527,7 +587,7 @@ int runSingleStream(const rtsp::AppConfig& config) {
 } // namespace
 
 int main(int argc, char* argv[]) {
-    spdlog::set_pattern("[%Y-%m-%d %H:%M:%S.%e] [%^%l%$] %v");
+    initializeLogging();
 
     auto config = rtsp::loadAppConfig("config/config.yaml");
     rtsp::applyCommandLineOverrides(config, argc, argv);
