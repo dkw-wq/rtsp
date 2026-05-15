@@ -197,7 +197,7 @@ if ($Dual) {
     }
 }
 
-Start-Sleep -Seconds 8
+Start-Sleep -Seconds 3
 
 foreach ($publisher in $publishers) {
     if ($publisher.Process.HasExited) {

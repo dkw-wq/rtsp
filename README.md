@@ -42,7 +42,7 @@ face_detection:
 
 ```powershell
 cmake --build build-vcpkg --config Release --target onnx_cuda_probe
-$env:Path = "C:\Program Files\NVIDIA\CUDNN\v9.22\bin\13.2\x64;$env:Path"
+$env:Path = "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.2\bin\x64;C:\Program Files\NVIDIA\CUDNN\v9.22\bin\13.2\x64;$env:Path"
 .\build-vcpkg\bin\Release\onnx_cuda_probe.exe models\det_500m.onnx
 ```
 
@@ -173,8 +173,44 @@ sync:
 
 .\scripts\start_webcam_rtsp.ps1 -Dual
 
-以cuda人脸检测用：
+CUDA 人脸检测运行方式：
+
+先安装带 NVDEC/NVCODEC 支持的 FFmpeg 依赖：
+
+```powershell
 E:\vcpkg\vcpkg.exe install "ffmpeg[nvcodec]:x64-windows" --recurse
+.\scripts\build.ps1
+```
+
+确认 `config\config.yaml` 中启用 CUDA 硬解和 ONNX CUDA 人脸检测：
+
+```yaml
+hw_decode: "cuda"
+
+face_detection:
+  enabled: true
+  backend: "onnx_cuda"
+  model: "models/det_500m.onnx"
+```
+
+运行前把 CUDA Toolkit 和 cuDNN 运行库加入当前 PowerShell 的 `PATH`：
+
+```powershell
+$env:Path = "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.2\bin\x64;C:\Program Files\NVIDIA\CUDNN\v9.22\bin\13.2\x64;$env:Path"
+```
+
+先用探针确认 ONNX Runtime CUDA session 能创建成功：
+
+```powershell
+cmake --build build-vcpkg --config Release --target onnx_cuda_probe
+.\build-vcpkg\bin\Release\onnx_cuda_probe.exe models\det_500m.onnx
+```
+
+看到 `cuda_session=ok` 后，再启动播放器：
+
+```powershell
+.\build-vcpkg\bin\Release\rtsp_player.exe
+```
 
 默认会输出：
 
