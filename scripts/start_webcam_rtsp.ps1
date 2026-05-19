@@ -21,6 +21,7 @@ $mediaMtxDir = Join-Path $workspaceRoot "mediamtx"
 $mediaMtxExe = Join-Path $mediaMtxDir "mediamtx.exe"
 $logDir = Join-Path $mediaMtxDir "logs"
 $mediaMtxPidFile = Join-Path $logDir "mediamtx.pid"
+$secondWatcherPidFile = Join-Path $logDir "ffmpeg-webcam2-watcher.pid"
 
 function Get-DShowVideoDevices {
     $previousErrorActionPreference = $ErrorActionPreference
@@ -136,6 +137,17 @@ foreach ($ffmpegPidFile in $ffmpegPidFiles) {
     }
 }
 
+if ($Dual -and (Test-Path $secondWatcherPidFile)) {
+    $oldWatcherPid = Get-Content $secondWatcherPidFile -ErrorAction SilentlyContinue |
+        Select-Object -First 1
+    if ($oldWatcherPid -and (Get-Process -Id $oldWatcherPid -ErrorAction SilentlyContinue)) {
+        Write-Host "Optional second camera watcher is already running from PID file: $secondWatcherPidFile"
+        Write-Host "Run scripts\stop_webcam_rtsp.ps1 before restarting publishers."
+        exit 0
+    }
+    Remove-Item $secondWatcherPidFile -Force
+}
+
 function Start-WebcamPublisher {
     param(
         [Parameter(Mandatory = $true)][string]$Name,
@@ -219,6 +231,45 @@ function Start-AudioPublisher {
     return $ffmpegProcess
 }
 
+function Start-OptionalSecondWatcher {
+    param(
+        [Parameter(Mandatory = $true)][string]$Name,
+        [Parameter(Mandatory = $true)][string]$Url,
+        [Parameter(Mandatory = $true)][string]$Size,
+        [switch]$DebugLog
+    )
+
+    $watcherScript = Join-Path $PSScriptRoot "watch_optional_webcam_rtsp.ps1"
+    if (!(Test-Path -LiteralPath $watcherScript)) {
+        throw "Optional second camera watcher script not found: $watcherScript"
+    }
+
+    $arguments = @(
+        "-NoProfile",
+        "-ExecutionPolicy", "Bypass",
+        "-File", "`"$watcherScript`"",
+        "-CameraName", "`"$Name`"",
+        "-RtspUrl", "`"$Url`"",
+        "-VideoSize", "`"$Size`"",
+        "-Framerate", "$Framerate"
+    )
+    if ($DebugLog) {
+        $arguments += "-FfmpegDebug"
+    }
+
+    $watcherProcess = Start-Process `
+        -FilePath "powershell" `
+        -ArgumentList ($arguments -join " ") `
+        -WorkingDirectory $repoRoot `
+        -RedirectStandardOutput (Join-Path $logDir "ffmpeg-webcam2-watcher.stdout.log") `
+        -RedirectStandardError (Join-Path $logDir "ffmpeg-webcam2-watcher.stderr.log") `
+        -WindowStyle Hidden `
+        -PassThru
+
+    Set-Content -Path $secondWatcherPidFile -Value $watcherProcess.Id
+    return $watcherProcess
+}
+
 $publishers = @()
 $publishers += @{
     Process = Start-WebcamPublisher `
@@ -268,6 +319,20 @@ if ($dualEnabled) {
     }
 }
 
+$secondWatcher = $null
+if ($Dual) {
+    $secondSize = if ([string]::IsNullOrWhiteSpace($SecondVideoSize)) {
+        $VideoSize
+    } else {
+        $SecondVideoSize
+    }
+    $secondWatcher = Start-OptionalSecondWatcher `
+        -Name $SecondCameraName `
+        -Url $SecondRtspUrl `
+        -Size $secondSize `
+        -DebugLog:$FfmpegDebug
+}
+
 Start-Sleep -Seconds 3
 
 foreach ($publisher in $publishers) {
@@ -283,8 +348,17 @@ foreach ($publisher in $publishers) {
                 Remove-Item $pidFile -Force
             }
         }
+        if ($secondWatcher -and !$secondWatcher.HasExited) {
+            Stop-Process -Id $secondWatcher.Id -Force
+        }
+        if (Test-Path $secondWatcherPidFile) {
+            Remove-Item $secondWatcherPidFile -Force
+        }
         throw "FFmpeg failed to publish webcam stream: $($publisher.Url)"
     }
+}
+if ($secondWatcher) {
+    Write-Host "Optional second camera watcher PID: $($secondWatcher.Id)"
 }
 
 Write-Host "MediaMTX PID: $($mediaMtxProcess.Id)"

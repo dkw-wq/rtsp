@@ -39,6 +39,7 @@ public:
     void start();
     void stopAndDisconnect();
     bool isRunning() const;
+    void setForwardAudioToPlayer(bool enabled);
 
     RtspClient& client();
     const RtspClient& client() const;
