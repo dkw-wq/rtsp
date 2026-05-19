@@ -359,10 +359,30 @@ int runMultiStream(const rtsp::AppConfig& config) {
     int windowHeight = primaryHeight;
     windowWidth = std::clamp(windowWidth, 640, 1920);
     windowHeight = std::clamp(windowHeight, 360, 1080);
-    const std::string windowTitle =
-        streams.size() > 1 ? "RTSP Player - Dual View" : "RTSP Player";
-    if (!renderer->initialize(windowWidth, windowHeight, windowTitle)) {
-        SPDLOG_ERROR("Failed to initialize multi-stream renderer");
+    size_t rendererSlotCount = 0;
+    auto initializeRendererForSlotCount = [&](size_t slotCount) {
+        const size_t clampedSlotCount = std::max<size_t>(std::min<size_t>(slotCount, 2), 1);
+        const int layoutWidth =
+            std::clamp(primaryWidth * static_cast<int>(clampedSlotCount), 640, 1920);
+        const int layoutHeight = std::clamp(primaryHeight, 360, 1080);
+        const std::string windowTitle =
+            clampedSlotCount > 1 ? "RTSP Player - Dual View" : "RTSP Player";
+
+        if (renderer && renderer->isInitialized()) {
+            renderer->close();
+        }
+        renderer = createRenderer(config, !usesOpenGlRenderer);
+        if (!renderer->initialize(layoutWidth, layoutHeight, windowTitle)) {
+            SPDLOG_ERROR("Failed to initialize renderer for {} active stream(s)",
+                         clampedSlotCount);
+            return false;
+        }
+        rendererSlotCount = clampedSlotCount;
+        SPDLOG_INFO("Renderer layout active streams: {}", rendererSlotCount);
+        return true;
+    };
+
+    if (!initializeRendererForSlotCount(static_cast<size_t>(activeStreamCount))) {
         return -1;
     }
 
@@ -508,14 +528,31 @@ int runMultiStream(const rtsp::AppConfig& config) {
             if (!streamAvailable[index]) {
                 continue;
             }
+            if (!streams[index]->latestFrame) {
+                continue;
+            }
             frames.push_back(streams[index]->latestFrame);
-            hasAnyFrame = hasAnyFrame || static_cast<bool>(streams[index]->latestFrame);
+            hasAnyFrame = true;
         }
 
         if (hasAnyFrame && hasNewVideoFrame) {
+            if (usesVulkanRenderer && frames.size() != rendererSlotCount) {
+                SPDLOG_INFO("Reinitializing Vulkan renderer for {} active stream(s)",
+                            frames.size());
+                if (!initializeRendererForSlotCount(frames.size())) {
+                    g_running = false;
+                    break;
+                }
+            }
             renderer->setPlaybackStats(streams.front()->stats);
             renderer->setFaceOverlays(faceAnalyzer->latestResults());
-            renderer->render(frames);
+            if (!renderer->render(frames) && usesVulkanRenderer) {
+                SPDLOG_WARN("Vulkan render failed; rebuilding renderer");
+                if (!initializeRendererForSlotCount(frames.size())) {
+                    g_running = false;
+                    break;
+                }
+            }
 
             for (size_t index = 0; index < streams.size(); ++index) {
                 if (streamAvailable[index]) {

@@ -653,11 +653,19 @@ bool VulkanVideoRenderer::render(const std::shared_ptr<MediaFrame>& frame) {
 }
 
 bool VulkanVideoRenderer::render(const std::vector<std::shared_ptr<MediaFrame>>& frames) {
-    if (frames.size() <= 1) {
-        return frames.empty() ? false : render(frames.front());
+    std::vector<std::shared_ptr<MediaFrame>> readyFrames;
+    readyFrames.reserve(frames.size());
+    for (const auto& frame : frames) {
+        if (frame) {
+            readyFrames.push_back(frame);
+        }
     }
 
-    return renderMultiNv12(frames);
+    if (readyFrames.size() <= 1) {
+        return readyFrames.empty() ? false : render(readyFrames.front());
+    }
+
+    return renderMultiNv12(readyFrames);
 }
 
 void VulkanVideoRenderer::setPlaybackStats(const PlaybackStats& stats) {
@@ -1803,6 +1811,13 @@ bool VulkanVideoRenderer::renderNv12(const MediaFrame& frame) {
         pendingCudaUploadFrameRef_.reset();
 #endif
 
+        if (activeVideoSlots_ != 1) {
+            vkDeviceWaitIdle(device_);
+            multiReady_.fill(false);
+            multiUploadPending_.fill(false);
+            activeVideoSlots_ = 1;
+        }
+
         if (frame.width != width_ || frame.height != height_) {
             vkDeviceWaitIdle(device_);
             width_ = frame.width;
@@ -1823,7 +1838,6 @@ bool VulkanVideoRenderer::renderNv12(const MediaFrame& frame) {
         uploadYBufferOffset_ = 0;
         uploadUvBufferOffset_ = ySize;
         uploadPath_ = "CPU-STAGING";
-        activeVideoSlots_ = 1;
         multiUploadPending_.fill(false);
 #ifdef RTSP_ENABLE_CUDA_INTEROP
         currentUploadUsesCudaSemaphore_ = false;
@@ -1846,6 +1860,7 @@ bool VulkanVideoRenderer::renderMultiNv12(const std::vector<std::shared_ptr<Medi
         return false;
     }
 
+    const bool slotModeChanged = activeVideoSlots_ != static_cast<uint32_t>(slotCount);
     VkDeviceSize requiredSize = 0;
     std::array<VkDeviceSize, kMaxVideoSlots> yOffsets{};
     std::array<VkDeviceSize, kMaxVideoSlots> uvOffsets{};
@@ -1901,6 +1916,12 @@ bool VulkanVideoRenderer::renderMultiNv12(const std::vector<std::shared_ptr<Medi
         pendingCudaUploadFrameRef_.reset();
         currentUploadUsesCudaSemaphore_ = false;
 #endif
+
+        if (slotModeChanged) {
+            vkDeviceWaitIdle(device_);
+            multiReady_.fill(false);
+            multiUploadPending_.fill(false);
+        }
 
         for (size_t slot = 0; slot < slotCount; ++slot) {
             const MediaFrame* frame = uploadFrames[slot];
@@ -2066,6 +2087,13 @@ bool VulkanVideoRenderer::renderCudaNv12(const MediaFrame& frame) {
         }
         pendingCudaUploadFrameRef_.reset();
 
+        if (activeVideoSlots_ != 1) {
+            vkDeviceWaitIdle(device_);
+            multiReady_.fill(false);
+            multiUploadPending_.fill(false);
+            activeVideoSlots_ = 1;
+        }
+
         if (frame.width != width_ || frame.height != height_) {
             vkDeviceWaitIdle(device_);
             width_ = frame.width;
@@ -2099,7 +2127,6 @@ bool VulkanVideoRenderer::renderCudaNv12(const MediaFrame& frame) {
         uploadYBufferOffset_ = 0;
         uploadUvBufferOffset_ = 0;
         uploadPath_ = "CUDA-VK-BUFFER";
-        activeVideoSlots_ = 1;
         multiUploadPending_.fill(false);
         currentUploadUsesCudaSemaphore_ = true;
 
