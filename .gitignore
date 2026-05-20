@@ -3,5 +3,4 @@ cmake/
 captures/
 logs/*
 !logs/.gitkeep
-srt_server/build
-pusher/build
+
