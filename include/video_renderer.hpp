@@ -31,7 +31,7 @@ enum class RendererCommand {
 
 /**
  * @brief 视频渲染器
- * @note 渲染后端接口，当前默认实现位于video_renderer.cpp中的SDL2后端
+ * @note 渲染后端接口，具体实现位于src/rendering目录下
  */
 class VideoRenderer {
 public:

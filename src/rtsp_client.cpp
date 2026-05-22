@@ -132,6 +132,7 @@ public:
         , cudaFrameLayoutLogged_(false)
         , waitingForVideoKeyframe_(true)
         , videoStarted_(false)
+        , interruptRequested_(false)
         , openDeadline_(std::chrono::steady_clock::time_point::max())
     {}
 
@@ -141,6 +142,7 @@ public:
 
     bool connect(const std::string& url) {
         close();
+        interruptRequested_ = false;
 
         SPDLOG_INFO("Connecting to RTSP stream: {}", url);
 
@@ -172,7 +174,10 @@ public:
         }
 
         // 获取流信息
+        openDeadline_ = std::chrono::steady_clock::now() +
+                        std::chrono::milliseconds(connectionOptions_.timeoutMs);
         ret = avformat_find_stream_info(formatContext_, nullptr);
+        openDeadline_ = std::chrono::steady_clock::time_point::max();
         if (ret < 0) {
             SPDLOG_ERROR("Failed to find stream info");
             close();
@@ -358,6 +363,7 @@ public:
         if (running_) {
             return;
         }
+        interruptRequested_ = false;
         running_ = true;
         if (audioCodecContext_ != nullptr) {
             audioThread_ = std::thread(&Impl::audioDecodeLoop, this);
@@ -366,6 +372,7 @@ public:
     }
 
     void stop() {
+        interruptRequested_ = true;
         running_ = false;
         audioCv_.notify_all();
         if (receiveThread_.joinable()) {
@@ -954,6 +961,9 @@ private:
 
     static int interruptCallback(void* opaque) {
         auto* self = static_cast<Impl*>(opaque);
+        if (self->interruptRequested_.load()) {
+            return 1;
+        }
         return std::chrono::steady_clock::now() > self->openDeadline_;
     }
 
@@ -1451,6 +1461,7 @@ private:
     mutable bool cudaFrameLayoutLogged_;
     bool waitingForVideoKeyframe_;
     bool videoStarted_;
+    std::atomic<bool> interruptRequested_;
     std::chrono::steady_clock::time_point openDeadline_;
     AVFormatContext* recordingContext_ = nullptr;
     std::string recordingPath_;

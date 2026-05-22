@@ -48,4 +48,18 @@ foreach ($process in $ffmpegProcesses) {
     $stoppedCount++
 }
 
+$watchdogProcesses = Get-CimInstance Win32_Process -Filter "name = 'powershell.exe'" -ErrorAction SilentlyContinue |
+    Where-Object {
+        $_.CommandLine -like "*watch_webcam_publisher.ps1*" -and (
+            $_.CommandLine -like "*$RtspUrl*" -or
+            $_.CommandLine -like "*rtsp://127.0.0.1:8554/webcam2*" -or
+            $_.CommandLine -like "*rtsp://127.0.0.1:8554/audio*"
+        )
+    }
+
+foreach ($process in $watchdogProcesses) {
+    Stop-Process -Id $process.ProcessId -Force
+    $stoppedCount++
+}
+
 Write-Host "Webcam RTSP stream stopped. Processes stopped: $stoppedCount"

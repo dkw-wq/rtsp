@@ -57,7 +57,7 @@ foreach ($ffmpegPidFile in $ffmpegPidFiles) {
     if (Test-Path $ffmpegPidFile) {
         $oldPid = Get-Content $ffmpegPidFile -ErrorAction SilentlyContinue | Select-Object -First 1
         if ($oldPid -and (Get-Process -Id $oldPid -ErrorAction SilentlyContinue)) {
-            Write-Host "FFmpeg publisher is already running from PID file: $ffmpegPidFile"
+            Write-Host "Publisher watchdog is already running from PID file: $ffmpegPidFile"
             Write-Host "Run scripts\stop_webcam_rtsp.ps1 before restarting publishers."
             exit 0
         }
@@ -77,41 +77,38 @@ function Start-WebcamPublisher {
         [switch]$DebugLog
     )
 
-    $inputName = "video=$Name"
-    if (!$DisableAudio -and ![string]::IsNullOrWhiteSpace($AudioDeviceName)) {
-        $inputName = "${inputName}:audio=$AudioDeviceName"
+    $watcherScript = Join-Path $PSScriptRoot "watch_webcam_publisher.ps1"
+    $watcherArgs = @(
+        "-NoProfile",
+        "-ExecutionPolicy", "Bypass",
+        "-File", "`"$watcherScript`"",
+        "-Mode", "video",
+        "-Name", "`"$Name`"",
+        "-Url", "`"$Url`"",
+        "-LogDir", "`"$logDir`"",
+        "-LogPrefix", "`"$LogPrefix`"",
+        "-Size", "`"$Size`"",
+        "-Framerate", "$Framerate"
+    )
+    if (![string]::IsNullOrWhiteSpace($AudioDeviceName)) {
+        $watcherArgs += @("-AudioDeviceName", "`"$AudioDeviceName`"")
+    }
+    if ($DisableAudio) {
+        $watcherArgs += "-DisableAudio"
+    }
+    if ($DebugLog) {
+        $watcherArgs += "-DebugLog"
     }
 
-    $audioArgs = if ($DisableAudio -or [string]::IsNullOrWhiteSpace($AudioDeviceName)) {
-        "-an"
-    } else {
-        "-c:a aac -ar 48000 -ac 2 -b:a 128k"
-    }
-
-    $logArgs = if ($DebugLog) {
-        "-hide_banner -stats -stats_period 1 -loglevel info "
-    } else {
-        "-hide_banner -nostats -loglevel warning "
-    }
-
-    $ffmpegArgs = $logArgs +
-        "-f dshow -rtbufsize 100M -video_size $Size -framerate $Framerate -vcodec mjpeg " +
-        "-i `"$inputName`" " +
-        "-c:v libx264 -preset ultrafast -tune zerolatency -g $Framerate -pix_fmt yuv420p " +
-        "$audioArgs " +
-        "-f rtsp -rtsp_transport tcp $Url"
-
-    $ffmpegProcess = Start-Process `
-        -FilePath "ffmpeg" `
-        -ArgumentList $ffmpegArgs `
+    $watcherProcess = Start-Process `
+        -FilePath "powershell" `
+        -ArgumentList ($watcherArgs -join " ") `
         -WorkingDirectory $mediaMtxDir `
-        -RedirectStandardOutput (Join-Path $logDir "$LogPrefix.stdout.log") `
-        -RedirectStandardError (Join-Path $logDir "$LogPrefix.stderr.log") `
         -WindowStyle Hidden `
         -PassThru
 
-    Set-Content -Path $PidFile -Value $ffmpegProcess.Id
-    return $ffmpegProcess
+    Set-Content -Path $PidFile -Value $watcherProcess.Id
+    return $watcherProcess
 }
 
 function Start-AudioPublisher {
@@ -123,29 +120,30 @@ function Start-AudioPublisher {
         [switch]$DebugLog
     )
 
-    $logArgs = if ($DebugLog) {
-        "-hide_banner -stats -stats_period 1 -loglevel info "
-    } else {
-        "-hide_banner -nostats -loglevel warning "
+    $watcherScript = Join-Path $PSScriptRoot "watch_webcam_publisher.ps1"
+    $watcherArgs = @(
+        "-NoProfile",
+        "-ExecutionPolicy", "Bypass",
+        "-File", "`"$watcherScript`"",
+        "-Mode", "audio",
+        "-Name", "`"$Name`"",
+        "-Url", "`"$Url`"",
+        "-LogDir", "`"$logDir`"",
+        "-LogPrefix", "`"$LogPrefix`""
+    )
+    if ($DebugLog) {
+        $watcherArgs += "-DebugLog"
     }
 
-    $ffmpegArgs = $logArgs +
-        "-f dshow -rtbufsize 10M " +
-        "-i `"audio=$Name`" " +
-        "-c:a aac -ar 48000 -ac 2 -b:a 128k " +
-        "-f rtsp -rtsp_transport tcp $Url"
-
-    $ffmpegProcess = Start-Process `
-        -FilePath "ffmpeg" `
-        -ArgumentList $ffmpegArgs `
+    $watcherProcess = Start-Process `
+        -FilePath "powershell" `
+        -ArgumentList ($watcherArgs -join " ") `
         -WorkingDirectory $mediaMtxDir `
-        -RedirectStandardOutput (Join-Path $logDir "$LogPrefix.stdout.log") `
-        -RedirectStandardError (Join-Path $logDir "$LogPrefix.stderr.log") `
         -WindowStyle Hidden `
         -PassThru
 
-    Set-Content -Path $PidFile -Value $ffmpegProcess.Id
-    return $ffmpegProcess
+    Set-Content -Path $PidFile -Value $watcherProcess.Id
+    return $watcherProcess
 }
 
 $publishers = @()
@@ -212,13 +210,13 @@ foreach ($publisher in $publishers) {
                 Remove-Item $pidFile -Force
             }
         }
-        throw "FFmpeg failed to publish webcam stream: $($publisher.Url)"
+        throw "Publisher watchdog failed to start: $($publisher.Url)"
     }
 }
 
 Write-Host "MediaMTX PID: $($mediaMtxProcess.Id)"
 foreach ($publisher in $publishers) {
-    Write-Host "FFmpeg PID: $($publisher.Process.Id)"
+    Write-Host "Publisher watchdog PID: $($publisher.Process.Id)"
     Write-Host "RTSP URL: $($publisher.Url)"
 }
 

@@ -10,6 +10,8 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <future>
+#include <limits>
 #include <memory>
 #include <string>
 #include <thread>
@@ -84,6 +86,124 @@ std::unique_ptr<rtsp::VideoRenderer> createRenderer(const rtsp::AppConfig& confi
     return rtsp::createSdlVideoRenderer();
 }
 
+struct MultiStreamRuntime {
+    bool online = false;
+    bool reconnecting = false;
+    bool topologyChanged = false;
+    uint32_t reconnectDelayMs = 0;
+    std::chrono::steady_clock::time_point nextReconnectTime =
+        std::chrono::steady_clock::now();
+    std::future<bool> reconnectFuture;
+};
+
+bool startStreamOnce(rtsp::StreamSession& stream) {
+    if (!stream.connect()) {
+        return false;
+    }
+    stream.start();
+    return true;
+}
+
+uint32_t nextReconnectDelay(uint32_t currentDelay, const rtsp::ReconnectOptions& reconnect) {
+    const uint32_t baseDelay = currentDelay == 0 ? reconnect.initialDelayMs : currentDelay;
+    const uint32_t doubledDelay = baseDelay == 0 ? 1 : baseDelay * 2;
+    return std::min(doubledDelay, reconnect.maxDelayMs);
+}
+
+void scheduleReconnect(MultiStreamRuntime& runtime,
+                       const rtsp::ReconnectOptions& reconnect,
+                       bool immediate) {
+    const uint32_t delayMs =
+        runtime.reconnectDelayMs == 0 ? reconnect.initialDelayMs : runtime.reconnectDelayMs;
+    runtime.nextReconnectTime =
+        std::chrono::steady_clock::now() +
+        (immediate ? std::chrono::milliseconds(0) : std::chrono::milliseconds(delayMs));
+    runtime.reconnectDelayMs = nextReconnectDelay(delayMs, reconnect);
+}
+
+void markStreamOffline(rtsp::StreamSession& stream,
+                       MultiStreamRuntime& runtime,
+                       const rtsp::ReconnectOptions& reconnect,
+                       bool immediateReconnect) {
+    stream.stopAndDisconnect();
+    stream.resetBufferedFrames();
+    stream.resetStats();
+    runtime.online = false;
+    runtime.reconnecting = false;
+    runtime.topologyChanged = true;
+    scheduleReconnect(runtime, reconnect, immediateReconnect);
+}
+
+void pollReconnect(rtsp::StreamSession& stream,
+                   MultiStreamRuntime& runtime,
+                   const rtsp::ReconnectOptions& reconnect) {
+    if (!reconnect.enabled || runtime.online) {
+        return;
+    }
+
+    if (runtime.reconnecting) {
+        if (runtime.reconnectFuture.wait_for(std::chrono::milliseconds(0)) !=
+            std::future_status::ready) {
+            return;
+        }
+
+        bool connected = false;
+        try {
+            connected = runtime.reconnectFuture.get();
+        } catch (const std::exception& e) {
+            SPDLOG_WARN("RTSP stream {} reconnect failed with exception: {}",
+                        stream.streamIndex() + 1,
+                        e.what());
+        }
+
+        runtime.reconnecting = false;
+        runtime.online = connected;
+        if (connected) {
+            runtime.reconnectDelayMs = reconnect.initialDelayMs;
+            runtime.topologyChanged = true;
+            stream.resetBufferedFrames();
+            stream.resetStats();
+            SPDLOG_INFO("RTSP stream {} reconnected", stream.streamIndex() + 1);
+            return;
+        }
+
+        SPDLOG_WARN("RTSP stream {} reconnect failed; retrying later",
+                    stream.streamIndex() + 1);
+        scheduleReconnect(runtime, reconnect, false);
+        return;
+    }
+
+    if (std::chrono::steady_clock::now() < runtime.nextReconnectTime) {
+        return;
+    }
+
+    runtime.reconnecting = true;
+    SPDLOG_INFO("Reconnecting RTSP stream {} in background...", stream.streamIndex() + 1);
+    runtime.reconnectFuture = std::async(std::launch::async, [&stream]() {
+        return startStreamOnce(stream);
+    });
+}
+
+void finishReconnects(std::vector<std::unique_ptr<rtsp::StreamSession>>& streams,
+                      std::vector<MultiStreamRuntime>& runtimes) {
+    for (size_t index = 0; index < runtimes.size(); ++index) {
+        auto& runtime = runtimes[index];
+        if (!runtime.reconnecting || !runtime.reconnectFuture.valid()) {
+            continue;
+        }
+
+        try {
+            runtime.online = runtime.reconnectFuture.get();
+        } catch (const std::exception& e) {
+            SPDLOG_WARN("RTSP stream {} reconnect ended with exception during shutdown: {}",
+                        streams[index]->streamIndex() + 1,
+                        e.what());
+            runtime.online = false;
+        }
+        runtime.reconnecting = false;
+    }
+}
+
 void logConfig(const rtsp::AppConfig& config) {
     SPDLOG_INFO("RTSP URL: {}", config.rtspUrl);
     SPDLOG_INFO("RTSP stream count: {}", config.rtspUrls.size());
@@ -140,6 +260,7 @@ int runMultiStream(const rtsp::AppConfig& config) {
     faceAnalyzer->initialize(config.faceDetectionOptions);
     std::vector<std::unique_ptr<rtsp::StreamSession>> streams;
     streams.reserve(streamCount);
+    std::vector<MultiStreamRuntime> streamRuntimes(streamCount);
 
     for (size_t index = 0; index < streamCount; ++index) {
         rtsp::StreamSessionOptions options;
@@ -173,10 +294,19 @@ int runMultiStream(const rtsp::AppConfig& config) {
         audioStream = std::make_unique<rtsp::StreamSession>(options);
     }
 
-    for (auto& stream : streams) {
-        if (!connectStreamWithRetry(*stream, config.reconnectOptions, *renderer, false, true)) {
-            return -1;
+    size_t onlineStreamCount = 0;
+    for (size_t index = 0; index < streams.size(); ++index) {
+        auto& stream = *streams[index];
+        if (startStreamOnce(stream)) {
+            streamRuntimes[index].online = true;
+            streamRuntimes[index].reconnectDelayMs = config.reconnectOptions.initialDelayMs;
+            ++onlineStreamCount;
+            continue;
         }
+
+        SPDLOG_WARN("RTSP stream {} unavailable at startup; will retry in background",
+                    index + 1);
+        scheduleReconnect(streamRuntimes[index], config.reconnectOptions, true);
     }
 
     if (audioStream) {
@@ -191,37 +321,50 @@ int runMultiStream(const rtsp::AppConfig& config) {
 
     int windowWidth = 0;
     int windowHeight = 0;
-    for (const auto& stream : streams) {
+    for (size_t index = 0; index < streams.size(); ++index) {
+        if (!streamRuntimes[index].online) {
+            continue;
+        }
+        const auto& stream = streams[index];
         windowWidth += std::max(stream->client().getWidth(), 1);
         windowHeight = std::max(windowHeight, std::max(stream->client().getHeight(), 1));
     }
+    if (onlineStreamCount == 0) {
+        windowWidth = config.width;
+        windowHeight = config.height;
+    }
     windowWidth = std::clamp(windowWidth, 640, 1920);
     windowHeight = std::clamp(windowHeight, 360, 1080);
-    if (!renderer->initialize(windowWidth, windowHeight, "RTSP Player - Dual View")) {
-        SPDLOG_ERROR("Failed to initialize Vulkan multi-stream renderer");
+    if (!renderer->initialize(windowWidth, windowHeight, "RTSP Player - Adaptive View")) {
+        SPDLOG_ERROR("Failed to initialize multi-stream renderer");
         return -1;
     }
 
-    SPDLOG_INFO("Dual RTSP streaming started, press ESC or Q to quit");
+    SPDLOG_INFO("Adaptive RTSP streaming started, press ESC or Q to quit");
 
     while (g_running && renderer->handleEvents()) {
         bool hasNewVideoFrame = false;
+        bool topologyChanged = false;
         bool waitingForSync = false;
 
         for (size_t index = 0; index < streamCount; ++index) {
             auto& stream = *streams[index];
+            auto& runtime = streamRuntimes[index];
+            pollReconnect(stream, runtime, config.reconnectOptions);
+            topologyChanged = topologyChanged || runtime.topologyChanged;
+            runtime.topologyChanged = false;
+            if (!runtime.online) {
+                continue;
+            }
+
             if (!stream.isRunning()) {
                 SPDLOG_WARN("RTSP stream {} receive loop stopped", index + 1);
-                stream.stopAndDisconnect();
-                stream.resetBufferedFrames();
+                markStreamOffline(stream,
+                                  runtime,
+                                  config.reconnectOptions,
+                                  true);
                 if (index == 0) {
                     audioPlayer->reset();
-                }
-
-                if (!config.reconnectOptions.enabled ||
-                    !connectStreamWithRetry(stream, config.reconnectOptions, *renderer, true, true)) {
-                    g_running = false;
-                    break;
                 }
                 continue;
             }
@@ -314,25 +457,58 @@ int runMultiStream(const rtsp::AppConfig& config) {
 
         std::vector<std::shared_ptr<rtsp::MediaFrame>> frames;
         frames.reserve(streamCount);
+        std::vector<size_t> originalToActiveSlot(streamCount, std::numeric_limits<size_t>::max());
         bool hasAnyFrame = false;
-        for (const auto& stream : streams) {
-            frames.push_back(stream->latestFrame);
-            hasAnyFrame = hasAnyFrame || static_cast<bool>(stream->latestFrame);
+        for (size_t index = 0; index < streamCount; ++index) {
+            if (!streamRuntimes[index].online) {
+                continue;
+            }
+
+            originalToActiveSlot[index] = frames.size();
+            frames.push_back(streams[index]->latestFrame);
+            hasAnyFrame = hasAnyFrame || static_cast<bool>(streams[index]->latestFrame);
         }
 
-        if (hasAnyFrame && hasNewVideoFrame) {
-            renderer->setPlaybackStats(streams.front()->stats);
-            renderer->setFaceOverlays(faceAnalyzer->latestResults());
+        if (hasAnyFrame && (hasNewVideoFrame || topologyChanged)) {
+            size_t statsStreamIndex = 0;
+            for (size_t index = 0; index < streamCount; ++index) {
+                if (streamRuntimes[index].online) {
+                    statsStreamIndex = index;
+                    break;
+                }
+            }
+
+            std::vector<rtsp::FaceDetectionResult> remappedOverlays;
+            for (const auto& result : faceAnalyzer->latestResults()) {
+                if (result.streamIndex >= originalToActiveSlot.size()) {
+                    continue;
+                }
+
+                const size_t activeSlot = originalToActiveSlot[result.streamIndex];
+                if (activeSlot == std::numeric_limits<size_t>::max()) {
+                    continue;
+                }
+
+                auto remapped = result;
+                remapped.streamIndex = activeSlot;
+                remappedOverlays.push_back(std::move(remapped));
+            }
+
+            renderer->setPlaybackStats(streams[statsStreamIndex]->stats);
+            renderer->setFaceOverlays(remappedOverlays);
             renderer->render(frames);
 
-            for (auto& stream : streams) {
-                stream->updateInputFpsIfDue();
+            for (size_t index = 0; index < streamCount; ++index) {
+                if (streamRuntimes[index].online) {
+                    streams[index]->updateInputFpsIfDue();
+                }
             }
         }
 
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
 
+    finishReconnects(streams, streamRuntimes);
     for (auto& stream : streams) {
         stream->stopAndDisconnect();
     }

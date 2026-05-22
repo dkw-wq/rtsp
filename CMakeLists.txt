@@ -88,9 +88,24 @@ set(SOURCES
     src/onnx_scrfd_detector.cpp
     src/sync_controller.cpp
     src/stream_session.cpp
-    src/video_renderer.cpp
-    src/opengl_video_renderer.cpp
-    src/vulkan_video_renderer.cpp
+    src/rendering/common/overlay_font.cpp
+    src/rendering/common/renderer_input.cpp
+    src/rendering/sdl_video_renderer.cpp
+    src/rendering/opengl/opengl_video_renderer.cpp
+    src/rendering/opengl/opengl_capture.cpp
+    src/rendering/opengl/opengl_filters.cpp
+    src/rendering/opengl/opengl_gl_api.cpp
+    src/rendering/opengl/opengl_layout.cpp
+    src/rendering/opengl/opengl_overlay.cpp
+    src/rendering/opengl/opengl_programs.cpp
+    src/rendering/opengl/opengl_upload.cpp
+    src/rendering/vulkan/vulkan_video_renderer.cpp
+    src/rendering/vulkan/vulkan_capture.cpp
+    src/rendering/vulkan/vulkan_helpers.cpp
+    src/rendering/vulkan/vulkan_overlay.cpp
+    src/rendering/vulkan/vulkan_render_commands.cpp
+    src/rendering/vulkan/vulkan_resources.cpp
+    src/rendering/vulkan/vulkan_setup.cpp
 )
 
 set(HEADERS
