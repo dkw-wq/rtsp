@@ -133,12 +133,12 @@ void StreamSession::updateInputFpsIfDue() {
 
     const double elapsedSeconds = std::chrono::duration<double>(elapsed).count();
     stats.fps = static_cast<double>(receivedFramesSinceFpsUpdate_) / elapsedSeconds;
-    SPDLOG_INFO("RTSP stream {} input fps={:.1f}, jitter_buffer={}, dropped={}, latency_ms={}",
+    /*SPDLOG_INFO("RTSP stream {} input fps={:.1f}, jitter_buffer={}, dropped={}, latency_ms={}",
                 options_.streamIndex + 1,
                 stats.fps,
                 stats.jitterBufferSize,
                 stats.droppedFrames,
-                stats.latencyMs);
+                stats.latencyMs);*/
     receivedFramesSinceFpsUpdate_ = 0;
     lastFpsUpdateTime_ = now;
 }
