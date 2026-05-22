@@ -78,6 +78,8 @@ include_directories(
 # Source files
 set(SOURCES
     src/main.cpp
+    src/app_logging.cpp
+    src/player_runner.cpp
     src/rtsp_client.cpp
     src/jitter_buffer.cpp
     src/audio_player.cpp
@@ -109,6 +111,8 @@ set(SOURCES
 )
 
 set(HEADERS
+    include/app_logging.hpp
+    include/player_runner.hpp
     include/rtsp_client.hpp
     include/jitter_buffer.hpp
     include/audio_player.hpp
