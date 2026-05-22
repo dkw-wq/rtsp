@@ -207,7 +207,11 @@ int runMultiStreamImpl(const rtsp::AppConfig& config) {
         options.hardwareDecodeBackend = config.hwDecodeBackend;
         options.audioEnabled = false;
         options.videoEnabled = true;
+#ifdef RTSP_ENABLE_CUDA_INTEROP
+        options.hardwareFrameOutput = usesOpenGlRenderer || usesVulkanRenderer;
+#else
         options.hardwareFrameOutput = false;
+#endif
         options.jitterMaxSize = config.jitterMaxSize;
         options.jitterLatencyMs = config.jitterLatencyMs;
         options.streamIndex = index;
@@ -584,10 +588,9 @@ int runSingleStreamImpl(const rtsp::AppConfig& config) {
     options.audioEnabled = config.audioOptions.enabled;
     options.videoEnabled = true;
 #ifdef RTSP_ENABLE_CUDA_INTEROP
-    options.hardwareFrameOutput =
-        (usesOpenGlRenderer || usesVulkanRenderer) && !config.faceDetectionOptions.enabled;
-    if (config.faceDetectionOptions.enabled && (usesOpenGlRenderer || usesVulkanRenderer)) {
-        SPDLOG_INFO("Hardware frame passthrough disabled while face detection is enabled");
+    options.hardwareFrameOutput = usesOpenGlRenderer || usesVulkanRenderer;
+    if (options.hardwareFrameOutput && config.faceDetectionOptions.enabled) {
+        SPDLOG_INFO("Hardware frame passthrough remains enabled; face detection will sample CPU copies only when needed");
     }
 #else
     options.hardwareFrameOutput = false;

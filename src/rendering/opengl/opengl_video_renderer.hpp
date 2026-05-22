@@ -216,6 +216,7 @@ private:
                                int videoHeight,
                                uint32_t slotIndex,
                                uint32_t slotCount) const;
+    bool ensureTextureStorage(int width, int height);
     bool uploadNv12Textures(const uint8_t* y, const uint8_t* uv, int width, int height);
     void drawCurrentTextures();
     bool renderNv12(const uint8_t* y, const uint8_t* uv, int width, int height);
@@ -227,6 +228,7 @@ private:
     void saveScreenshot(const RgbFrame& frame);
     void toggleRecording();
 #ifdef RTSP_ENABLE_CUDA_INTEROP
+    bool ensureCudaPixelUnpackBuffers(int width, int height);
     bool registerCudaInterop();
     void unregisterCudaInterop();
     bool uploadCudaFrameToTextures(const MediaFrame& frame);

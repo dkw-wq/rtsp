@@ -2,6 +2,8 @@ param(
     [string]$BuildDir = "build-vcpkg",
     [string]$Config = "Release",
     [string]$ToolchainFile = "E:/vcpkg/scripts/buildsystems/vcpkg.cmake",
+    [string]$Triplet = "x64-windows",
+    [switch]$EnableCudaFfmpeg,
     [switch]$SkipConfigure
 )
 
@@ -41,6 +43,22 @@ if (!(Get-Command cmake -ErrorAction SilentlyContinue)) {
 
 if (!(Test-Path $ToolchainFile)) {
     throw "vcpkg toolchain file not found: $ToolchainFile"
+}
+
+$toolchainPath = Resolve-Path -LiteralPath $ToolchainFile
+$vcpkgRoot = Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $toolchainPath))
+$vcpkgExe = Join-Path $vcpkgRoot "vcpkg.exe"
+
+if ($EnableCudaFfmpeg) {
+    if (!(Test-Path -LiteralPath $vcpkgExe)) {
+        throw "vcpkg executable not found: $vcpkgExe"
+    }
+
+    Invoke-Checked $vcpkgExe @(
+        "install",
+        "ffmpeg[avcodec,avdevice,avfilter,avformat,swresample,swscale,srt,nvcodec]:$Triplet",
+        "--recurse"
+    )
 }
 
 Push-Location $repoRoot

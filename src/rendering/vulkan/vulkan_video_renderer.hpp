@@ -155,6 +155,7 @@ private:
     void createOrResizeOverlayBuffer(VulkanBuffer& buffer, VkDeviceSize size);
 #ifdef RTSP_ENABLE_CUDA_INTEROP
     void createOrResizeCudaUploadBuffers(int width, int height);
+    void createOrResizeCudaUploadBuffersForSlot(size_t slot, int width, int height);
     bool ensureCudaUploadSemaphore();
     void destroyCudaUploadSemaphore();
     void consumeCudaUploadSemaphore();
@@ -177,6 +178,8 @@ private:
     bool renderCudaNv12ViaCpuFallback(const MediaFrame& frame, const char* reason);
     bool transferCudaFrameToCpuNv12(const MediaFrame& frame, MediaFrame& cpuFrame) const;
     bool uploadCudaFrameToVulkanBuffers(const MediaFrame& frame);
+    bool uploadCudaFrameToVulkanBuffersForSlot(const MediaFrame& frame, size_t slot);
+    bool signalCudaUploadSemaphore();
 #endif
     void recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t imageIndex);
     void transitionImage(VkCommandBuffer commandBuffer,
@@ -291,6 +294,8 @@ private:
 #ifdef RTSP_ENABLE_CUDA_INTEROP
     VulkanCudaBuffer cudaYBuffer_;
     VulkanCudaBuffer cudaUvBuffer_;
+    std::array<VulkanCudaBuffer, kMaxVideoSlots> multiCudaYBuffers_;
+    std::array<VulkanCudaBuffer, kMaxVideoSlots> multiCudaUvBuffers_;
     PFN_vkGetMemoryWin32HandleKHR vkGetMemoryWin32HandleKHR_;
     PFN_vkGetSemaphoreWin32HandleKHR vkGetSemaphoreWin32HandleKHR_;
     VkSemaphore cudaUploadSemaphore_;
@@ -300,6 +305,7 @@ private:
     bool cudaInteropDisabled_;
     bool cudaFallbackLogged_;
     std::shared_ptr<void> pendingCudaUploadFrameRef_;
+    std::array<std::shared_ptr<void>, kMaxVideoSlots> pendingMultiCudaUploadFrameRefs_;
 #endif
     VulkanBuffer overlayBackgroundBuffer_;
     VulkanBuffer faceOverlayBuffer_;

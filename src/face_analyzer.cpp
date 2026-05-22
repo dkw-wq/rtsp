@@ -3,17 +3,116 @@
 #include <algorithm>
 #include <chrono>
 #include <cstddef>
+#include <cstring>
 #include <utility>
 
 #include <spdlog/spdlog.h>
+
+extern "C" {
+#include <libavutil/error.h>
+#include <libavutil/frame.h>
+#include <libavutil/hwcontext.h>
+#include <libavutil/pixfmt.h>
+}
 
 namespace rtsp {
 
 namespace {
 
+std::string ffmpegError(int errorCode) {
+    char errbuf[AV_ERROR_MAX_STRING_SIZE] = {};
+    av_strerror(errorCode, errbuf, sizeof(errbuf));
+    return errbuf;
+}
+
+void copyPlane(uint8_t* dst, int dstStride, const uint8_t* src,
+               int srcStride, int width, int height) {
+    for (int row = 0; row < height; ++row) {
+        std::memcpy(dst + row * dstStride, src + row * srcStride, width);
+    }
+}
+
+std::shared_ptr<MediaFrame> transferCudaFrameForDetection(
+    const std::shared_ptr<MediaFrame>& frame) {
+    if (!frame || frame->pixelFormat != MediaFrame::PixelFormat::CUDA_NV12 ||
+        !frame->hardwareFrameRef) {
+        return nullptr;
+    }
+
+    AVFrame* hardwareFrame = static_cast<AVFrame*>(frame->hardwareFrameRef.get());
+    if (!hardwareFrame) {
+        return nullptr;
+    }
+
+    AVFrame* softwareFrame = av_frame_alloc();
+    if (!softwareFrame) {
+        SPDLOG_WARN("Face detection failed to allocate CPU AVFrame for CUDA readback");
+        return nullptr;
+    }
+
+    const int transferResult = av_hwframe_transfer_data(softwareFrame, hardwareFrame, 0);
+    if (transferResult < 0) {
+        SPDLOG_WARN("Face detection failed to transfer CUDA frame to CPU: {}",
+                    ffmpegError(transferResult));
+        av_frame_free(&softwareFrame);
+        return nullptr;
+    }
+
+    const auto cleanupFrame = std::unique_ptr<AVFrame, void (*)(AVFrame*)>(
+        softwareFrame,
+        [](AVFrame* framePtr) {
+            AVFrame* frameToFree = framePtr;
+            av_frame_free(&frameToFree);
+        });
+
+    if (softwareFrame->format != AV_PIX_FMT_NV12 ||
+        softwareFrame->data[0] == nullptr ||
+        softwareFrame->data[1] == nullptr ||
+        softwareFrame->linesize[0] <= 0 ||
+        softwareFrame->linesize[1] <= 0) {
+        SPDLOG_WARN("Face detection CUDA readback produced unsupported pixel format {}",
+                    softwareFrame->format);
+        return nullptr;
+    }
+
+    auto copy = std::make_shared<MediaFrame>(*frame);
+    copy->pixelFormat = MediaFrame::PixelFormat::NV12;
+    copy->hardwareFrameRef.reset();
+    copy->gpuData = {0, 0};
+    copy->gpuLinesize = {0, 0};
+    copy->width = softwareFrame->width;
+    copy->height = softwareFrame->height;
+
+    const int ySize = copy->width * copy->height;
+    copy->data.resize(static_cast<size_t>(ySize) * 3U / 2U);
+
+    copyPlane(copy->data.data(),
+              copy->width,
+              softwareFrame->data[0],
+              softwareFrame->linesize[0],
+              copy->width,
+              copy->height);
+    copyPlane(copy->data.data() + ySize,
+              copy->width,
+              softwareFrame->data[1],
+              softwareFrame->linesize[1],
+              copy->width,
+              copy->height / 2);
+
+    return copy;
+}
+
 std::shared_ptr<MediaFrame> cloneFrameForDetection(const std::shared_ptr<MediaFrame>& frame) {
-    if (!frame || frame->type != MediaFrame::Type::VIDEO ||
-        frame->pixelFormat != MediaFrame::PixelFormat::NV12) {
+    if (!frame || frame->type != MediaFrame::Type::VIDEO) {
+        return nullptr;
+    }
+
+    if (frame->pixelFormat == MediaFrame::PixelFormat::CUDA_NV12) {
+        auto copy = std::make_shared<MediaFrame>(*frame);
+        return copy;
+    }
+
+    if (frame->pixelFormat != MediaFrame::PixelFormat::NV12) {
         return nullptr;
     }
 
@@ -159,14 +258,23 @@ void FaceAnalyzer::workerLoop() {
             }
         }
 
+        auto detectionFrame = work.frame;
+        if (detectionFrame &&
+            detectionFrame->pixelFormat == MediaFrame::PixelFormat::CUDA_NV12) {
+            detectionFrame = transferCudaFrameForDetection(detectionFrame);
+        }
+        if (!detectionFrame) {
+            continue;
+        }
+
         const auto started = std::chrono::steady_clock::now();
-        auto faces = detector_->detect(*work.frame);
+        auto faces = detector_->detect(*detectionFrame);
         const auto finished = std::chrono::steady_clock::now();
 
         FaceDetectionResult result;
         result.streamIndex = work.streamIndex;
-        result.frameWidth = work.frame->width;
-        result.frameHeight = work.frame->height;
+        result.frameWidth = detectionFrame->width;
+        result.frameHeight = detectionFrame->height;
         result.faces = std::move(faces);
         result.inferenceMs =
             std::chrono::duration<double, std::milli>(finished - started).count();

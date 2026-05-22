@@ -58,6 +58,8 @@ VulkanVideoRenderer::VulkanVideoRenderer()
 #ifdef RTSP_ENABLE_CUDA_INTEROP
     , cudaYBuffer_()
     , cudaUvBuffer_()
+    , multiCudaYBuffers_()
+    , multiCudaUvBuffers_()
     , vkGetMemoryWin32HandleKHR_(nullptr)
     , vkGetSemaphoreWin32HandleKHR_(nullptr)
     , cudaUploadSemaphore_(VK_NULL_HANDLE)
@@ -67,6 +69,7 @@ VulkanVideoRenderer::VulkanVideoRenderer()
     , cudaInteropDisabled_(false)
     , cudaFallbackLogged_(false)
     , pendingCudaUploadFrameRef_()
+    , pendingMultiCudaUploadFrameRefs_()
 #endif
     , overlayBackgroundBuffer_()
     , faceOverlayBuffer_()
@@ -252,6 +255,10 @@ void VulkanVideoRenderer::close() {
     destroyCudaUploadSemaphore();
     destroyCudaBuffer(cudaYBuffer_);
     destroyCudaBuffer(cudaUvBuffer_);
+    for (size_t slot = 0; slot < kMaxVideoSlots; ++slot) {
+        destroyCudaBuffer(multiCudaYBuffers_[slot]);
+        destroyCudaBuffer(multiCudaUvBuffers_[slot]);
+    }
 #endif
     destroyBuffer(overlayBackgroundBuffer_);
     destroyBuffer(faceOverlayBuffer_);
@@ -323,6 +330,7 @@ void VulkanVideoRenderer::close() {
     cudaInteropDisabled_ = false;
     cudaFallbackLogged_ = false;
     pendingCudaUploadFrameRef_.reset();
+    pendingMultiCudaUploadFrameRefs_.fill(nullptr);
 #endif
     overlayVertices_.clear();
 }

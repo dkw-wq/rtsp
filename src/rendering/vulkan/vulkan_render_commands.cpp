@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstring>
 #include <optional>
+#include <stdexcept>
 
 #include <spdlog/spdlog.h>
 
@@ -87,7 +88,13 @@ bool VulkanVideoRenderer::renderMultiNv12(const std::vector<std::shared_ptr<Medi
     std::array<VkDeviceSize, kMaxVideoSlots> yOffsets{};
     std::array<VkDeviceSize, kMaxVideoSlots> uvOffsets{};
     std::array<VkDeviceSize, kMaxVideoSlots> frameSizes{};
-    std::array<const MediaFrame*, kMaxVideoSlots> uploadFrames{};
+    std::array<const MediaFrame*, kMaxVideoSlots> cpuUploadFrames{};
+#ifdef RTSP_ENABLE_CUDA_INTEROP
+    std::array<const MediaFrame*, kMaxVideoSlots> cudaUploadFrames{};
+    std::array<std::shared_ptr<MediaFrame>, kMaxVideoSlots> cpuFallbackFrames{};
+    bool hasCudaUploads = false;
+#endif
+    bool hasCpuUploads = false;
 
     for (size_t slot = 0; slot < slotCount; ++slot) {
         const auto& frame = frames[slot];
@@ -95,34 +102,76 @@ bool VulkanVideoRenderer::renderMultiNv12(const std::vector<std::shared_ptr<Medi
         if (!frame) {
             continue;
         }
-        if (frame->pixelFormat != MediaFrame::PixelFormat::NV12) {
-            SPDLOG_ERROR("Vulkan multi-stream renderer expects CPU NV12 frames");
+
+        const MediaFrame* uploadFrame = frame.get();
+#ifdef RTSP_ENABLE_CUDA_INTEROP
+        if (frame->pixelFormat == MediaFrame::PixelFormat::CUDA_NV12) {
+            if (frame->width <= 0 || frame->height <= 0 ||
+                frame->width % 2 != 0 || frame->height % 2 != 0) {
+                SPDLOG_ERROR("Invalid multi-stream CUDA NV12 frame dimensions: {}x{}",
+                             frame->width, frame->height);
+                return false;
+            }
+            if (frame->gpuData[0] == 0 || frame->gpuData[1] == 0 ||
+                frame->gpuLinesize[0] <= 0 || frame->gpuLinesize[1] <= 0) {
+                SPDLOG_ERROR("CUDA NV12 frame is missing GPU plane data for stream {}",
+                             slot + 1);
+                return false;
+            }
+
+            if (!cudaInteropDisabled_) {
+                cudaUploadFrames[slot] = frame.get();
+                hasCudaUploads = true;
+                continue;
+            }
+
+            auto cpuFrame = std::make_shared<MediaFrame>();
+            if (!transferCudaFrameToCpuNv12(*frame, *cpuFrame)) {
+                return false;
+            }
+            cpuFallbackFrames[slot] = cpuFrame;
+            uploadFrame = cpuFrame.get();
+        }
+#else
+        if (frame->pixelFormat == MediaFrame::PixelFormat::CUDA_NV12) {
+            SPDLOG_ERROR("Vulkan CUDA multi-stream support is not compiled in");
             return false;
         }
-        if (frame->width <= 0 || frame->height <= 0 ||
-            frame->width % 2 != 0 || frame->height % 2 != 0) {
+#endif
+
+        if (uploadFrame->pixelFormat != MediaFrame::PixelFormat::NV12) {
+            SPDLOG_ERROR("Vulkan multi-stream renderer expects NV12 or CUDA_NV12 frames");
+            return false;
+        }
+        if (uploadFrame->width <= 0 || uploadFrame->height <= 0 ||
+            uploadFrame->width % 2 != 0 || uploadFrame->height % 2 != 0) {
             SPDLOG_ERROR("Invalid multi-stream NV12 frame dimensions: {}x{}",
-                         frame->width, frame->height);
+                         uploadFrame->width, uploadFrame->height);
             return false;
         }
 
-        const VkDeviceSize ySize = static_cast<VkDeviceSize>(frame->width) *
-                                   static_cast<VkDeviceSize>(frame->height);
+        const VkDeviceSize ySize = static_cast<VkDeviceSize>(uploadFrame->width) *
+                                   static_cast<VkDeviceSize>(uploadFrame->height);
         const VkDeviceSize frameSize = ySize * 3U / 2U;
-        if (frame->data.size() < static_cast<size_t>(frameSize)) {
+        if (uploadFrame->data.size() < static_cast<size_t>(frameSize)) {
             SPDLOG_ERROR("Multi-stream frame data too small for NV12: {} < {}",
-                         frame->data.size(), static_cast<uint64_t>(frameSize));
+                         uploadFrame->data.size(), static_cast<uint64_t>(frameSize));
             return false;
         }
 
         yOffsets[slot] = requiredSize;
         uvOffsets[slot] = requiredSize + ySize;
         frameSizes[slot] = frameSize;
-        uploadFrames[slot] = frame.get();
+        cpuUploadFrames[slot] = uploadFrame;
         requiredSize += frameSize;
+        hasCpuUploads = true;
     }
 
-    if (requiredSize == 0) {
+    if (!hasCpuUploads
+#ifdef RTSP_ENABLE_CUDA_INTEROP
+        && !hasCudaUploads
+#endif
+    ) {
         return false;
     }
 
@@ -136,11 +185,17 @@ bool VulkanVideoRenderer::renderMultiNv12(const std::vector<std::shared_ptr<Medi
         }
 #ifdef RTSP_ENABLE_CUDA_INTEROP
         pendingCudaUploadFrameRef_.reset();
+        pendingMultiCudaUploadFrameRefs_.fill(nullptr);
         currentUploadUsesCudaSemaphore_ = false;
 #endif
 
         for (size_t slot = 0; slot < slotCount; ++slot) {
-            const MediaFrame* frame = uploadFrames[slot];
+            const MediaFrame* frame = cpuUploadFrames[slot];
+#ifdef RTSP_ENABLE_CUDA_INTEROP
+            if (frame == nullptr) {
+                frame = cudaUploadFrames[slot];
+            }
+#endif
             if (frame == nullptr) {
                 continue;
             }
@@ -154,30 +209,71 @@ bool VulkanVideoRenderer::renderMultiNv12(const std::vector<std::shared_ptr<Medi
             }
         }
 
-        createOrResizeStagingBuffer(requiredSize);
-        void* mappedMemory = nullptr;
-        checkVk(vkMapMemory(device_, stagingBuffer_.memory, 0, requiredSize, 0, &mappedMemory),
-                "vkMapMemory multi-stream");
-        auto* mappedBytes = static_cast<uint8_t*>(mappedMemory);
-        for (size_t slot = 0; slot < slotCount; ++slot) {
-            const MediaFrame* frame = uploadFrames[slot];
-            if (frame == nullptr) {
-                continue;
+        if (hasCpuUploads) {
+            createOrResizeStagingBuffer(requiredSize);
+            void* mappedMemory = nullptr;
+            checkVk(vkMapMemory(device_, stagingBuffer_.memory, 0, requiredSize, 0, &mappedMemory),
+                    "vkMapMemory multi-stream");
+            auto* mappedBytes = static_cast<uint8_t*>(mappedMemory);
+            for (size_t slot = 0; slot < slotCount; ++slot) {
+                const MediaFrame* frame = cpuUploadFrames[slot];
+                if (frame == nullptr) {
+                    continue;
+                }
+                std::memcpy(mappedBytes + yOffsets[slot],
+                            frame->data.data(),
+                            static_cast<size_t>(frameSizes[slot]));
+                multiUploadYBuffers_[slot] = stagingBuffer_.buffer;
+                multiUploadUvBuffers_[slot] = stagingBuffer_.buffer;
+                multiUploadYBufferOffsets_[slot] = yOffsets[slot];
+                multiUploadUvBufferOffsets_[slot] = uvOffsets[slot];
+                multiUploadPending_[slot] = true;
+                multiReady_[slot] = true;
             }
-            std::memcpy(mappedBytes + yOffsets[slot],
-                        frame->data.data(),
-                        static_cast<size_t>(frameSizes[slot]));
-            multiUploadYBuffers_[slot] = stagingBuffer_.buffer;
-            multiUploadUvBuffers_[slot] = stagingBuffer_.buffer;
-            multiUploadYBufferOffsets_[slot] = yOffsets[slot];
-            multiUploadUvBufferOffsets_[slot] = uvOffsets[slot];
-            multiUploadPending_[slot] = true;
-            multiReady_[slot] = true;
+            vkUnmapMemory(device_, stagingBuffer_.memory);
         }
-        vkUnmapMemory(device_, stagingBuffer_.memory);
+
+#ifdef RTSP_ENABLE_CUDA_INTEROP
+        if (hasCudaUploads) {
+            if (!ensureCudaUploadSemaphore()) {
+                throw std::runtime_error("failed to create CUDA/Vulkan upload semaphore");
+            }
+
+            for (size_t slot = 0; slot < slotCount; ++slot) {
+                const MediaFrame* frame = cudaUploadFrames[slot];
+                if (frame == nullptr) {
+                    continue;
+                }
+
+                createOrResizeCudaUploadBuffersForSlot(slot, frame->width, frame->height);
+                if (!uploadCudaFrameToVulkanBuffersForSlot(*frame, slot)) {
+                    throw std::runtime_error("failed to copy CUDA frame into Vulkan multi-stream upload buffer");
+                }
+
+                multiUploadYBuffers_[slot] = multiCudaYBuffers_[slot].vulkan.buffer;
+                multiUploadUvBuffers_[slot] = multiCudaUvBuffers_[slot].vulkan.buffer;
+                multiUploadYBufferOffsets_[slot] = 0;
+                multiUploadUvBufferOffsets_[slot] = 0;
+                multiUploadPending_[slot] = true;
+                multiReady_[slot] = true;
+                pendingMultiCudaUploadFrameRefs_[slot] = frame->hardwareFrameRef;
+            }
+
+            if (!signalCudaUploadSemaphore()) {
+                throw std::runtime_error("failed to signal CUDA/Vulkan multi-stream upload semaphore");
+            }
+            currentUploadUsesCudaSemaphore_ = true;
+        }
+#endif
 
         activeVideoSlots_ = static_cast<uint32_t>(slotCount);
-        uploadPath_ = "CPU-STAGING-MULTI";
+        uploadPath_ =
+#ifdef RTSP_ENABLE_CUDA_INTEROP
+            hasCudaUploads
+                ? (hasCpuUploads ? "CUDA-VK-BUFFER+CPU-STAGING-MULTI" : "CUDA-VK-BUFFER-MULTI")
+                :
+#endif
+                  "CPU-STAGING-MULTI";
         return submitUploadedFrame();
     } catch (const std::exception& e) {
         SPDLOG_ERROR("Vulkan multi-stream render failed: {}", e.what());
@@ -468,6 +564,53 @@ bool VulkanVideoRenderer::uploadCudaFrameToVulkanBuffers(const MediaFrame& frame
         return false;
     }
 
+    return signalCudaUploadSemaphore();
+}
+
+bool VulkanVideoRenderer::uploadCudaFrameToVulkanBuffersForSlot(const MediaFrame& frame,
+                                                                size_t slot) {
+    if (slot >= kMaxVideoSlots) {
+        return false;
+    }
+    if (cudaUploadExternalSemaphore_ == nullptr || cudaUploadStream_ == nullptr) {
+        SPDLOG_WARN("CUDA/Vulkan upload semaphore is not initialized");
+        return false;
+    }
+
+    const cudaError_t yError =
+        cudaMemcpy2DAsync(multiCudaYBuffers_[slot].cudaPtr,
+                          static_cast<size_t>(frame.width),
+                          reinterpret_cast<const void*>(frame.gpuData[0]),
+                          static_cast<size_t>(frame.gpuLinesize[0]),
+                          static_cast<size_t>(frame.width),
+                          static_cast<size_t>(frame.height),
+                          cudaMemcpyDeviceToDevice,
+                          cudaUploadStream_);
+    if (yError != cudaSuccess) {
+        SPDLOG_WARN("Failed to copy CUDA Y plane for Vulkan stream {}: {}",
+                    slot + 1, cudaErrorName(yError));
+        return false;
+    }
+
+    const cudaError_t uvError =
+        cudaMemcpy2DAsync(multiCudaUvBuffers_[slot].cudaPtr,
+                          static_cast<size_t>(frame.width),
+                          reinterpret_cast<const void*>(frame.gpuData[1]),
+                          static_cast<size_t>(frame.gpuLinesize[1]),
+                          static_cast<size_t>(frame.width),
+                          static_cast<size_t>(frame.height / 2),
+                          cudaMemcpyDeviceToDevice,
+                          cudaUploadStream_);
+    if (uvError != cudaSuccess) {
+        SPDLOG_WARN("Failed to copy CUDA UV plane for Vulkan stream {}: {}",
+                    slot + 1, cudaErrorName(uvError));
+        return false;
+    }
+
+    return true;
+}
+
+bool VulkanVideoRenderer::signalCudaUploadSemaphore() {
     cudaExternalSemaphoreSignalParams signalParams{};
     const cudaError_t signalError =
         cudaSignalExternalSemaphoresAsync(&cudaUploadExternalSemaphore_,

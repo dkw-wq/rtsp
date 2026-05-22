@@ -56,6 +56,30 @@ void VulkanVideoRenderer::createOrResizeCudaUploadBuffers(int width, int height)
     }
 }
 
+void VulkanVideoRenderer::createOrResizeCudaUploadBuffersForSlot(size_t slot,
+                                                                 int width,
+                                                                 int height) {
+    if (slot >= kMaxVideoSlots) {
+        throw std::out_of_range("CUDA multi-stream slot is out of range");
+    }
+
+    const VkDeviceSize ySize = static_cast<VkDeviceSize>(width) *
+                               static_cast<VkDeviceSize>(height);
+    const VkDeviceSize uvSize = ySize / 2U;
+
+    if (multiCudaYBuffers_[slot].vulkan.buffer == VK_NULL_HANDLE ||
+        multiCudaYBuffers_[slot].vulkan.size < ySize) {
+        destroyCudaBuffer(multiCudaYBuffers_[slot]);
+        multiCudaYBuffers_[slot] = createCudaInteropBuffer(ySize);
+    }
+
+    if (multiCudaUvBuffers_[slot].vulkan.buffer == VK_NULL_HANDLE ||
+        multiCudaUvBuffers_[slot].vulkan.size < uvSize) {
+        destroyCudaBuffer(multiCudaUvBuffers_[slot]);
+        multiCudaUvBuffers_[slot] = createCudaInteropBuffer(uvSize);
+    }
+}
+
 bool VulkanVideoRenderer::ensureCudaUploadSemaphore() {
     if (cudaUploadSemaphore_ != VK_NULL_HANDLE &&
         cudaUploadExternalSemaphore_ != nullptr &&
@@ -101,6 +125,7 @@ bool VulkanVideoRenderer::ensureCudaUploadSemaphore() {
 
 void VulkanVideoRenderer::destroyCudaUploadSemaphore() {
     pendingCudaUploadFrameRef_.reset();
+    pendingMultiCudaUploadFrameRefs_.fill(nullptr);
     currentUploadUsesCudaSemaphore_ = false;
 
     if (cudaUploadStream_ != nullptr) {
@@ -153,6 +178,7 @@ void VulkanVideoRenderer::consumeCudaUploadSemaphore() {
 
     currentUploadUsesCudaSemaphore_ = false;
     pendingCudaUploadFrameRef_.reset();
+    pendingMultiCudaUploadFrameRefs_.fill(nullptr);
 }
 #endif
 

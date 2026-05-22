@@ -26,7 +26,15 @@ Vulkan 后端支持 CPU NV12 帧上传和 shader 转 RGB，使用 SDL 创建 Vul
 
 hw_decode: "cuda"
 
-如果当前 FFmpeg、驱动或显卡不支持 CUDA 硬解，会自动尝试 d3d11va/dxva2，再回退到软件解码。
+如果当前 FFmpeg、驱动或显卡不支持 CUDA 硬解，会自动尝试 d3d11va/dxva2，再回退到软件解码。Windows/vcpkg 构建需要 FFmpeg 的 `nvcodec` feature，否则 `h264_cuvid` 不会出现在播放器实际加载的 `avcodec-*.dll` 里：
+
+```powershell
+.\scripts\build.ps1 -EnableCudaFfmpeg
+```
+
+该命令会安装/重建 `ffmpeg[nvcodec]`，并重新构建播放器。构建后可在 `build-vcpkg\bin\Release\avcodec-62.dll` 中检查 `h264_cuvid`，或启动播放器确认日志中出现 `Selected hardware decoder: h264_cuvid` 和 `Hardware decode active: cuda`。
+
+OpenGL/Vulkan 播放会尽量保持 CUDA 解码帧给渲染器；启用人脸检测时，只在 `detect_every_n_frames` 抽样帧上回读一份 CPU NV12 供 SCRFD 预处理。双路显示支持 `CUDA_NV12` 帧：OpenGL 逐路通过 CUDA/PBO 上传后绘制，Vulkan 逐路通过 CUDA/Vulkan external memory buffer 上传后合成。
 
 启用 SCRFD ONNX CUDA 人脸检测实验后端：
 

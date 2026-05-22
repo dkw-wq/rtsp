@@ -23,6 +23,30 @@ bool OpenGlVideoRenderer::renderNv12(const uint8_t* y, const uint8_t* uv,
     return finishFrameRender();
 }
 
+bool OpenGlVideoRenderer::ensureTextureStorage(int width, int height) {
+    if (!initialized_ || width <= 0 || height <= 0) {
+        return false;
+    }
+
+    if (textureWidth_ == width && textureHeight_ == height) {
+        return true;
+    }
+
+    gl_.activeTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, textures_[0]);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_R8, width, height, 0,
+                 GL_RED, GL_UNSIGNED_BYTE, nullptr);
+
+    gl_.activeTexture(GL_TEXTURE1);
+    glBindTexture(GL_TEXTURE_2D, textures_[1]);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RG8, width / 2, height / 2, 0,
+                 GL_RG, GL_UNSIGNED_BYTE, nullptr);
+
+    textureWidth_ = width;
+    textureHeight_ = height;
+    return true;
+}
+
 bool OpenGlVideoRenderer::uploadNv12Textures(const uint8_t* y,
                                              const uint8_t* uv,
                                              int width,
@@ -40,18 +64,8 @@ bool OpenGlVideoRenderer::uploadNv12Textures(const uint8_t* y,
     gl_.activeTexture(GL_TEXTURE1);
     glBindTexture(GL_TEXTURE_2D, textures_[1]);
 
-    if (textureWidth_ != width || textureHeight_ != height) {
-        gl_.activeTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_2D, textures_[0]);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_R8, width, height, 0,
-                     GL_RED, GL_UNSIGNED_BYTE, nullptr);
-
-        gl_.activeTexture(GL_TEXTURE1);
-        glBindTexture(GL_TEXTURE_2D, textures_[1]);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RG8, width / 2, height / 2, 0,
-                     GL_RG, GL_UNSIGNED_BYTE, nullptr);
-        textureWidth_ = width;
-        textureHeight_ = height;
+    if (!ensureTextureStorage(width, height)) {
+        return false;
     }
 
     gl_.activeTexture(GL_TEXTURE0);
@@ -81,12 +95,6 @@ bool OpenGlVideoRenderer::renderCudaNv12(const MediaFrame& frame) {
         return false;
     }
 
-    if (frame.width != width_ || frame.height != height_) {
-        SPDLOG_ERROR("CUDA frame size {}x{} does not match texture size {}x{}",
-                     frame.width, frame.height, width_, height_);
-        return false;
-    }
-
     if (frame.gpuData[0] == 0 || frame.gpuData[1] == 0 ||
         frame.gpuLinesize[0] <= 0 || frame.gpuLinesize[1] <= 0) {
         SPDLOG_ERROR("CUDA NV12 frame is missing GPU plane data");
@@ -113,6 +121,32 @@ bool OpenGlVideoRenderer::renderCudaNv12(const MediaFrame& frame) {
 }
 
 #ifdef RTSP_ENABLE_CUDA_INTEROP
+bool OpenGlVideoRenderer::ensureCudaPixelUnpackBuffers(int width, int height) {
+    const std::ptrdiff_t ySize =
+        static_cast<std::ptrdiff_t>(width) * static_cast<std::ptrdiff_t>(height);
+    const std::ptrdiff_t uvSize = ySize / 2;
+
+    if (ySize <= 0 || uvSize <= 0) {
+        return false;
+    }
+
+    if (textureWidth_ == width && textureHeight_ == height && cudaInteropRegistered_) {
+        return true;
+    }
+
+    unregisterCudaInterop();
+    if (!ensureTextureStorage(width, height)) {
+        return false;
+    }
+
+    gl_.bindBuffer(GL_PIXEL_UNPACK_BUFFER, pixelUnpackBuffers_[0]);
+    gl_.bufferData(GL_PIXEL_UNPACK_BUFFER, ySize, nullptr, GL_STREAM_DRAW);
+    gl_.bindBuffer(GL_PIXEL_UNPACK_BUFFER, pixelUnpackBuffers_[1]);
+    gl_.bufferData(GL_PIXEL_UNPACK_BUFFER, uvSize, nullptr, GL_STREAM_DRAW);
+    gl_.bindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
+    return true;
+}
+
 bool OpenGlVideoRenderer::registerCudaInterop() {
     if (cudaInteropRegistered_) {
         return true;
@@ -165,6 +199,10 @@ void OpenGlVideoRenderer::unregisterCudaInterop() {
 }
 
 bool OpenGlVideoRenderer::uploadCudaFrameToTextures(const MediaFrame& frame) {
+    if (!ensureCudaPixelUnpackBuffers(frame.width, frame.height)) {
+        return false;
+    }
+
     if (!registerCudaInterop()) {
         return false;
     }

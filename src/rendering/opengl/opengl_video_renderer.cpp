@@ -165,25 +165,45 @@ bool OpenGlVideoRenderer::render(const std::vector<std::shared_ptr<MediaFrame>>&
         if (!frame) {
             continue;
         }
-        if (frame->pixelFormat != MediaFrame::PixelFormat::NV12) {
-            SPDLOG_WARN("OpenGL multi-stream renderer expected CPU NV12 frame for stream {}",
+
+        bool uploaded = false;
+        if (frame->pixelFormat == MediaFrame::PixelFormat::NV12) {
+            const size_t ySize =
+                static_cast<size_t>(frame->width) * static_cast<size_t>(frame->height);
+            const size_t requiredSize = ySize * 3 / 2;
+            if (frame->data.size() < requiredSize) {
+                SPDLOG_WARN("Frame data too small for OpenGL stream {}: {} < {}",
+                            slot + 1, frame->data.size(), requiredSize);
+                continue;
+            }
+
+            uploaded = uploadNv12Textures(frame->data.data(),
+                                          frame->data.data() + ySize,
+                                          frame->width,
+                                          frame->height);
+#ifdef RTSP_ENABLE_CUDA_INTEROP
+        } else if (frame->pixelFormat == MediaFrame::PixelFormat::CUDA_NV12) {
+            uploaded = uploadCudaFrameToTextures(*frame);
+            if (!uploaded) {
+                SPDLOG_WARN("CUDA/OpenGL multi-stream upload failed for stream {}; using CPU fallback",
+                            slot + 1);
+                std::vector<uint8_t> cpuData;
+                if (downloadCudaFrameToNv12(*frame, cpuData)) {
+                    const size_t ySize =
+                        static_cast<size_t>(frame->width) * static_cast<size_t>(frame->height);
+                    uploaded = uploadNv12Textures(cpuData.data(),
+                                                  cpuData.data() + ySize,
+                                                  frame->width,
+                                                  frame->height);
+                }
+            }
+#endif
+        } else {
+            SPDLOG_WARN("OpenGL multi-stream renderer expected NV12 or CUDA_NV12 frame for stream {}",
                         slot + 1);
-            continue;
         }
 
-        const size_t ySize =
-            static_cast<size_t>(frame->width) * static_cast<size_t>(frame->height);
-        const size_t requiredSize = ySize * 3 / 2;
-        if (frame->data.size() < requiredSize) {
-            SPDLOG_WARN("Frame data too small for OpenGL stream {}: {} < {}",
-                        slot + 1, frame->data.size(), requiredSize);
-            continue;
-        }
-
-        if (!uploadNv12Textures(frame->data.data(),
-                                frame->data.data() + ySize,
-                                frame->width,
-                                frame->height)) {
+        if (!uploaded) {
             continue;
         }
 
