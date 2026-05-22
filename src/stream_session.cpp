@@ -72,6 +72,10 @@ bool StreamSession::isRunning() const {
     return client_->isRunning();
 }
 
+void StreamSession::setForwardAudioToPlayer(bool enabled) {
+    options_.forwardAudioToPlayer = enabled;
+}
+
 RtspClient& StreamSession::client() {
     return *client_;
 }

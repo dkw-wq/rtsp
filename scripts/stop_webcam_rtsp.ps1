@@ -10,6 +10,7 @@ $logDir = Join-Path $workspaceRoot "mediamtx\logs"
 $pidFiles = @(
     (Join-Path $logDir "ffmpeg-webcam.pid"),
     (Join-Path $logDir "ffmpeg-webcam2.pid"),
+    (Join-Path $logDir "ffmpeg-webcam2-watcher.pid"),
     (Join-Path $logDir "ffmpeg-audio.pid"),
     (Join-Path $logDir "mediamtx.pid")
 )

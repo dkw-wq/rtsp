@@ -21,10 +21,82 @@ $mediaMtxDir = Join-Path $workspaceRoot "mediamtx"
 $mediaMtxExe = Join-Path $mediaMtxDir "mediamtx.exe"
 $logDir = Join-Path $mediaMtxDir "logs"
 $mediaMtxPidFile = Join-Path $logDir "mediamtx.pid"
+$secondWatcherPidFile = Join-Path $logDir "ffmpeg-webcam2-watcher.pid"
+
+function Get-DShowVideoDevices {
+    $previousErrorActionPreference = $ErrorActionPreference
+    $previousNativeErrorPreference = $null
+    $hasNativeErrorPreference = Test-Path Variable:\PSNativeCommandUseErrorActionPreference
+    if ($hasNativeErrorPreference) {
+        $previousNativeErrorPreference = $PSNativeCommandUseErrorActionPreference
+    }
+
+    try {
+        $ErrorActionPreference = "Continue"
+        if ($hasNativeErrorPreference) {
+            $PSNativeCommandUseErrorActionPreference = $false
+        }
+        $output = & ffmpeg -hide_banner -list_devices true -f dshow -i dummy 2>&1
+    } finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+        if ($hasNativeErrorPreference) {
+            $PSNativeCommandUseErrorActionPreference = $previousNativeErrorPreference
+        }
+    }
+
+    $devices = @()
+    $inVideoSection = $false
+
+    foreach ($line in $output) {
+        $text = $line.ToString()
+        if ($text -match '"([^"]+)"\s+\(video\)') {
+            $devices += $Matches[1]
+            continue
+        }
+        if ($text -match "DirectShow video devices") {
+            $inVideoSection = $true
+            continue
+        }
+        if ($text -match "DirectShow audio devices") {
+            $inVideoSection = $false
+            continue
+        }
+        if ($inVideoSection -and $text -match '"([^"]+)"') {
+            $devices += $Matches[1]
+        }
+    }
+
+    return $devices | Select-Object -Unique
+}
+
+function Test-DShowVideoDevice {
+    param(
+        [Parameter(Mandatory = $true)][string]$Name,
+        [string[]]$Devices
+    )
+
+    return [bool]($Devices | Where-Object { $_ -eq $Name } | Select-Object -First 1)
+}
+
+$dualEnabled = $Dual
+if ($Dual) {
+    $videoDevices = Get-DShowVideoDevices
+    if (!(Test-DShowVideoDevice -Name $SecondCameraName -Devices $videoDevices)) {
+        Write-Warning "Second camera '$SecondCameraName' was not found. Falling back to single-camera RTSP publishing."
+        if ($videoDevices.Count -gt 0) {
+            Write-Host "Available DirectShow video devices:"
+            foreach ($device in $videoDevices) {
+                Write-Host "  - $device"
+            }
+        }
+        $dualEnabled = $false
+    }
+}
+
 $ffmpegPidFiles = @(
     (Join-Path $logDir "ffmpeg-webcam.pid")
 )
-if ($Dual) {
+if ($dualEnabled) {
     $ffmpegPidFiles += (Join-Path $logDir "ffmpeg-webcam2.pid")
     if (!$NoAudio -and ![string]::IsNullOrWhiteSpace($AudioName)) {
         $ffmpegPidFiles += (Join-Path $logDir "ffmpeg-audio.pid")
@@ -63,6 +135,17 @@ foreach ($ffmpegPidFile in $ffmpegPidFiles) {
         }
         Remove-Item $ffmpegPidFile -Force
     }
+}
+
+if ($Dual -and (Test-Path $secondWatcherPidFile)) {
+    $oldWatcherPid = Get-Content $secondWatcherPidFile -ErrorAction SilentlyContinue |
+        Select-Object -First 1
+    if ($oldWatcherPid -and (Get-Process -Id $oldWatcherPid -ErrorAction SilentlyContinue)) {
+        Write-Host "Optional second camera watcher is already running from PID file: $secondWatcherPidFile"
+        Write-Host "Run scripts\stop_webcam_rtsp.ps1 before restarting publishers."
+        exit 0
+    }
+    Remove-Item $secondWatcherPidFile -Force
 }
 
 function Start-WebcamPublisher {
@@ -146,6 +229,45 @@ function Start-AudioPublisher {
     return $watcherProcess
 }
 
+function Start-OptionalSecondWatcher {
+    param(
+        [Parameter(Mandatory = $true)][string]$Name,
+        [Parameter(Mandatory = $true)][string]$Url,
+        [Parameter(Mandatory = $true)][string]$Size,
+        [switch]$DebugLog
+    )
+
+    $watcherScript = Join-Path $PSScriptRoot "watch_optional_webcam_rtsp.ps1"
+    if (!(Test-Path -LiteralPath $watcherScript)) {
+        throw "Optional second camera watcher script not found: $watcherScript"
+    }
+
+    $arguments = @(
+        "-NoProfile",
+        "-ExecutionPolicy", "Bypass",
+        "-File", "`"$watcherScript`"",
+        "-CameraName", "`"$Name`"",
+        "-RtspUrl", "`"$Url`"",
+        "-VideoSize", "`"$Size`"",
+        "-Framerate", "$Framerate"
+    )
+    if ($DebugLog) {
+        $arguments += "-FfmpegDebug"
+    }
+
+    $watcherProcess = Start-Process `
+        -FilePath "powershell" `
+        -ArgumentList ($arguments -join " ") `
+        -WorkingDirectory $repoRoot `
+        -RedirectStandardOutput (Join-Path $logDir "ffmpeg-webcam2-watcher.stdout.log") `
+        -RedirectStandardError (Join-Path $logDir "ffmpeg-webcam2-watcher.stderr.log") `
+        -WindowStyle Hidden `
+        -PassThru
+
+    Set-Content -Path $secondWatcherPidFile -Value $watcherProcess.Id
+    return $watcherProcess
+}
+
 $publishers = @()
 $publishers += @{
     Process = Start-WebcamPublisher `
@@ -155,13 +277,13 @@ $publishers += @{
         -PidFile $ffmpegPidFiles[0] `
         -LogPrefix "ffmpeg-webcam" `
         -AudioDeviceName $AudioName `
-        -DisableAudio:($NoAudio -or $Dual) `
+        -DisableAudio:($NoAudio -or $dualEnabled) `
         -DebugLog:$FfmpegDebug
     Url = $RtspUrl
     Log = Join-Path $logDir "ffmpeg-webcam.stderr.log"
 }
 
-if ($Dual) {
+if ($dualEnabled) {
     $secondSize = if ([string]::IsNullOrWhiteSpace($SecondVideoSize)) {
         $VideoSize
     } else {
@@ -195,7 +317,21 @@ if ($Dual) {
     }
 }
 
-Start-Sleep -Seconds 8
+$secondWatcher = $null
+if ($Dual) {
+    $secondSize = if ([string]::IsNullOrWhiteSpace($SecondVideoSize)) {
+        $VideoSize
+    } else {
+        $SecondVideoSize
+    }
+    $secondWatcher = Start-OptionalSecondWatcher `
+        -Name $SecondCameraName `
+        -Url $SecondRtspUrl `
+        -Size $secondSize `
+        -DebugLog:$FfmpegDebug
+}
+
+Start-Sleep -Seconds 3
 
 foreach ($publisher in $publishers) {
     if ($publisher.Process.HasExited) {
@@ -210,8 +346,21 @@ foreach ($publisher in $publishers) {
                 Remove-Item $pidFile -Force
             }
         }
+<<<<<<< HEAD
         throw "Publisher watchdog failed to start: $($publisher.Url)"
+=======
+        if ($secondWatcher -and !$secondWatcher.HasExited) {
+            Stop-Process -Id $secondWatcher.Id -Force
+        }
+        if (Test-Path $secondWatcherPidFile) {
+            Remove-Item $secondWatcherPidFile -Force
+        }
+        throw "FFmpeg failed to publish webcam stream: $($publisher.Url)"
+>>>>>>> f04e4789eef1131313b8a3ca66964798db6d50f7
     }
+}
+if ($secondWatcher) {
+    Write-Host "Optional second camera watcher PID: $($secondWatcher.Id)"
 }
 
 Write-Host "MediaMTX PID: $($mediaMtxProcess.Id)"
@@ -220,9 +369,14 @@ foreach ($publisher in $publishers) {
     Write-Host "RTSP URL: $($publisher.Url)"
 }
 
-if ($Dual) {
+if ($dualEnabled) {
     Write-Host "Player config rtsp_urls:"
-    foreach ($publisher in $publishers) {
-        Write-Host "  - `"$($publisher.Url)`""
+    Write-Host "  - `"$RtspUrl`""
+    Write-Host "  - `"$SecondRtspUrl`""
+    if (!$NoAudio -and ![string]::IsNullOrWhiteSpace($AudioName)) {
+        Write-Host "Player config audio_rtsp_url: `"$AudioRtspUrl`""
     }
+} else {
+    Write-Host "Player command:"
+    Write-Host "  .\build-vcpkg\bin\Release\rtsp_player.exe `"$RtspUrl`""
 }

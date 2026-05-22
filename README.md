@@ -28,6 +28,31 @@ hw_decode: "cuda"
 
 如果当前 FFmpeg、驱动或显卡不支持 CUDA 硬解，会自动尝试 d3d11va/dxva2，再回退到软件解码。
 
+启用 SCRFD ONNX CUDA 人脸检测实验后端：
+
+```yaml
+face_detection:
+  enabled: true
+  backend: "onnx_cuda"
+```
+
+`onnx_cuda` 会先检查 ONNX Runtime 的 `CUDAExecutionProvider`，可用时使用 GPU 推理；不可用、初始化失败或缺少 provider DLL 时会记录 warning 并自动回退到 `onnx_cpu`。Windows 下需要确保 `onnxruntime_providers_cuda.dll`、`onnxruntime_providers_shared.dll` 以及匹配的 CUDA/cuDNN 运行库能被 exe 找到。
+
+检查 CUDA provider 是否真的可用：
+
+```powershell
+cmake --build build-vcpkg --config Release --target onnx_cuda_probe
+$env:Path = "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.2\bin\x64;C:\Program Files\NVIDIA\CUDNN\v9.22\bin\13.2\x64;$env:Path"
+.\build-vcpkg\bin\Release\onnx_cuda_probe.exe models\det_500m.onnx
+```
+
+看到下面两行就表示 ONNX Runtime CUDA session 已经创建成功：
+
+```text
+available_providers=CUDAExecutionProvider,CPUExecutionProvider
+cuda_session=ok
+```
+
 OpenGL 会保持视频原始宽高比，窗口比例不匹配时自动居中并显示黑边。
 
 OpenGL 和 Vulkan 渲染路径都使用 NV12 两纹理：Y 平面 + 交错 UV 平面。NV12 更贴近硬件解码输出，避免把 UV 拆成两个纹理后再上传。
@@ -109,7 +134,7 @@ rtsp_urls:
 
 .\build-vcpkg\bin\Release\rtsp_player.exe rtsp://第一个摄像头IP:554/你的路径 rtsp://第二个摄像头IP:554/你的路径
 
-当前双路首版只取前两个 RTSP 地址，在一个 Vulkan 窗口中左右分屏显示。音频只播放第一路；多路模式会关闭硬件帧直通，让 FFmpeg 输出 CPU NV12 帧给 Vulkan 上传，单路 Vulkan 的 CUDA/Vulkan 快路径仍然保留。
+当前多路管理只取前两个 RTSP 地址。第一路是主视频，连接失败会按 `reconnect` 配置重连；第二路是可选视频，启动时或运行中不可用都会临时隐藏，并按退避策略后台重连，恢复后自动回到左右分屏。多路模式会关闭硬件帧直通，让 FFmpeg 输出 CPU NV12 帧给 OpenGL/Vulkan 上传。
 
 双路本机推流会把音频拆成单独一路，视频 RTSP 只包含 H264：
 
@@ -147,6 +172,47 @@ sync:
 同时推送内置摄像头和罗技 USB 摄像头：
 
 .\scripts\start_webcam_rtsp.ps1 -Dual
+
+如果没有插入第二个 USB 摄像头，脚本会先按单路推流，同时启动后台 watcher 等待第二摄像头；第二摄像头插回后 watcher 会自动恢复 `webcam2` 推流。播放器在配置为双路时会把第二路当作可选流处理，第二路不可用时显示第一路，第二路恢复后自动回到分屏。
+
+CUDA 人脸检测运行方式：
+
+先安装带 NVDEC/NVCODEC 支持的 FFmpeg 依赖：
+
+```powershell
+E:\vcpkg\vcpkg.exe install "ffmpeg[nvcodec]:x64-windows" --recurse
+.\scripts\build.ps1
+```
+
+确认 `config\config.yaml` 中启用 CUDA 硬解和 ONNX CUDA 人脸检测：
+
+```yaml
+hw_decode: "cuda"
+
+face_detection:
+  enabled: true
+  backend: "onnx_cuda"
+  model: "models/det_500m.onnx"
+```
+
+运行前把 CUDA Toolkit 和 cuDNN 运行库加入当前 PowerShell 的 `PATH`：
+
+```powershell
+$env:Path = "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.2\bin\x64;C:\Program Files\NVIDIA\CUDNN\v9.22\bin\13.2\x64;$env:Path"
+```
+
+先用探针确认 ONNX Runtime CUDA session 能创建成功：
+
+```powershell
+cmake --build build-vcpkg --config Release --target onnx_cuda_probe
+.\build-vcpkg\bin\Release\onnx_cuda_probe.exe models\det_500m.onnx
+```
+
+看到 `cuda_session=ok` 后，再启动播放器：
+
+```powershell
+.\build-vcpkg\bin\Release\rtsp_player.exe
+```
 
 默认会输出：
 

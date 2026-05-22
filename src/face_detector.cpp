@@ -9,11 +9,12 @@ namespace rtsp {
 
 std::unique_ptr<IFaceDetector> createFaceDetector(const FaceDetectionOptions& options) {
     const std::string backend = toLower(options.backend);
-    if (backend == "onnx_cpu" || backend == "scrfd" || backend == "onnx") {
+    if (backend == "onnx_cpu" || backend == "onnx_cuda" || backend == "cuda" ||
+        backend == "scrfd" || backend == "onnx") {
         return std::make_unique<OnnxScrfdDetector>();
     }
 
-    SPDLOG_WARN("Unsupported face detection backend '{}'; use onnx_cpu", backend);
+    SPDLOG_WARN("Unsupported face detection backend '{}'; use onnx_cpu or onnx_cuda", backend);
     return nullptr;
 }
 

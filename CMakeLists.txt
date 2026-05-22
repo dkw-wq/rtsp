@@ -176,6 +176,34 @@ if(CUDAToolkit_FOUND)
     target_link_libraries(rtsp_player CUDA::cudart)
 endif()
 
+# ONNX Runtime CUDA/TensorRT providers are loaded dynamically at runtime. They
+# are not always copied as target dependencies, so keep any provider DLLs next
+# to executables that need to probe or use ORT execution providers.
+function(copy_onnxruntime_provider_dlls target_name)
+    get_target_property(ONNXRUNTIME_RUNTIME_DLL onnxruntime::onnxruntime IMPORTED_LOCATION_RELEASE)
+    if(NOT ONNXRUNTIME_RUNTIME_DLL)
+        get_target_property(ONNXRUNTIME_RUNTIME_DLL onnxruntime::onnxruntime IMPORTED_LOCATION)
+    endif()
+    if(ONNXRUNTIME_RUNTIME_DLL)
+        get_filename_component(ONNXRUNTIME_RUNTIME_DIR "${ONNXRUNTIME_RUNTIME_DLL}" DIRECTORY)
+        file(GLOB ONNXRUNTIME_PROVIDER_DLLS CONFIGURE_DEPENDS
+            "${ONNXRUNTIME_RUNTIME_DIR}/onnxruntime_providers_*.dll")
+        if(ONNXRUNTIME_PROVIDER_DLLS)
+            add_custom_command(TARGET ${target_name} POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    ${ONNXRUNTIME_PROVIDER_DLLS}
+                    "$<TARGET_FILE_DIR:${target_name}>"
+                VERBATIM
+            )
+        endif()
+    endif()
+endfunction()
+copy_onnxruntime_provider_dlls(rtsp_player)
+
+add_executable(onnx_cuda_probe EXCLUDE_FROM_ALL tools/onnx_cuda_probe.cpp)
+target_link_libraries(onnx_cuda_probe PRIVATE onnxruntime::onnxruntime)
+copy_onnxruntime_provider_dlls(onnx_cuda_probe)
+
 enable_testing()
 
 add_executable(rtsp_unit_tests
