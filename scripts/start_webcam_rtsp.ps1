@@ -98,9 +98,9 @@ $ffmpegPidFiles = @(
 )
 if ($dualEnabled) {
     $ffmpegPidFiles += (Join-Path $logDir "ffmpeg-webcam2.pid")
-    if (!$NoAudio -and ![string]::IsNullOrWhiteSpace($AudioName)) {
-        $ffmpegPidFiles += (Join-Path $logDir "ffmpeg-audio.pid")
-    }
+}
+if ($Dual -and !$NoAudio -and ![string]::IsNullOrWhiteSpace($AudioName)) {
+    $ffmpegPidFiles += (Join-Path $logDir "ffmpeg-audio.pid")
 }
 
 New-Item -ItemType Directory -Force -Path $logDir | Out-Null
@@ -277,7 +277,7 @@ $publishers += @{
         -PidFile $ffmpegPidFiles[0] `
         -LogPrefix "ffmpeg-webcam" `
         -AudioDeviceName $AudioName `
-        -DisableAudio:($NoAudio -or $dualEnabled) `
+        -DisableAudio:($NoAudio -or $Dual) `
         -DebugLog:$FfmpegDebug
     Url = $RtspUrl
     Log = Join-Path $logDir "ffmpeg-webcam.stderr.log"
@@ -303,22 +303,23 @@ if ($dualEnabled) {
         Log = Join-Path $logDir "ffmpeg-webcam2.stderr.log"
     }
 
-    if (!$NoAudio -and ![string]::IsNullOrWhiteSpace($AudioName)) {
-        $publishers += @{
-            Process = Start-AudioPublisher `
-                -Name $AudioName `
-                -Url $AudioRtspUrl `
-                -PidFile (Join-Path $logDir "ffmpeg-audio.pid") `
-                -LogPrefix "ffmpeg-audio" `
-                -DebugLog:$FfmpegDebug
-            Url = $AudioRtspUrl
-            Log = Join-Path $logDir "ffmpeg-audio.stderr.log"
-        }
+}
+
+if ($Dual -and !$NoAudio -and ![string]::IsNullOrWhiteSpace($AudioName)) {
+    $publishers += @{
+        Process = Start-AudioPublisher `
+            -Name $AudioName `
+            -Url $AudioRtspUrl `
+            -PidFile (Join-Path $logDir "ffmpeg-audio.pid") `
+            -LogPrefix "ffmpeg-audio" `
+            -DebugLog:$FfmpegDebug
+        Url = $AudioRtspUrl
+        Log = Join-Path $logDir "ffmpeg-audio.stderr.log"
     }
 }
 
 $secondWatcher = $null
-if ($Dual) {
+if ($Dual -and !$dualEnabled) {
     $secondSize = if ([string]::IsNullOrWhiteSpace($SecondVideoSize)) {
         $VideoSize
     } else {
@@ -346,17 +347,13 @@ foreach ($publisher in $publishers) {
                 Remove-Item $pidFile -Force
             }
         }
-<<<<<<< HEAD
-        throw "Publisher watchdog failed to start: $($publisher.Url)"
-=======
         if ($secondWatcher -and !$secondWatcher.HasExited) {
             Stop-Process -Id $secondWatcher.Id -Force
         }
         if (Test-Path $secondWatcherPidFile) {
             Remove-Item $secondWatcherPidFile -Force
         }
-        throw "FFmpeg failed to publish webcam stream: $($publisher.Url)"
->>>>>>> f04e4789eef1131313b8a3ca66964798db6d50f7
+        throw "Publisher watchdog failed to start: $($publisher.Url)"
     }
 }
 if ($secondWatcher) {
@@ -369,7 +366,7 @@ foreach ($publisher in $publishers) {
     Write-Host "RTSP URL: $($publisher.Url)"
 }
 
-if ($dualEnabled) {
+if ($Dual) {
     Write-Host "Player config rtsp_urls:"
     Write-Host "  - `"$RtspUrl`""
     Write-Host "  - `"$SecondRtspUrl`""

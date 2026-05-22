@@ -13,18 +13,16 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
-<<<<<<< HEAD
-#include <future>
-#include <limits>
-=======
 #include <ctime>
 #include <filesystem>
+#include <future>
 #include <iomanip>
->>>>>>> f04e4789eef1131313b8a3ca66964798db6d50f7
+#include <limits>
 #include <memory>
 #include <sstream>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -308,7 +306,7 @@ void logConfig(const rtsp::AppConfig& config) {
 int runSingleStream(const rtsp::AppConfig& config);
 
 int runMultiStream(const rtsp::AppConfig& config) {
-    const size_t requestedStreamCount = std::min<size_t>(config.rtspUrls.size(), 2);
+    const size_t streamCount = std::min<size_t>(config.rtspUrls.size(), 2);
     const std::string rendererBackend = rtsp::toLower(config.rendererName);
     const bool usesOpenGlRenderer = rendererBackend == "opengl" || rendererBackend == "gl";
     const bool usesVulkanRenderer = rendererBackend == "vulkan" || rendererBackend == "vk";
@@ -316,9 +314,13 @@ int runMultiStream(const rtsp::AppConfig& config) {
         SPDLOG_WARN("Multi-stream display supports OpenGL/Vulkan; using Vulkan instead of '{}'",
                     config.rendererName);
     }
-    if (config.rtspUrls.size() > requestedStreamCount) {
+    if (config.rtspUrls.size() > streamCount) {
         SPDLOG_WARN("Only the first {} RTSP streams are used in this build",
-                    requestedStreamCount);
+                    streamCount);
+    }
+    if (streamCount == 0) {
+        SPDLOG_ERROR("No RTSP streams configured");
+        return -1;
     }
 
     auto renderer = createRenderer(config, !usesOpenGlRenderer);
@@ -326,81 +328,22 @@ int runMultiStream(const rtsp::AppConfig& config) {
     auto faceAnalyzer = std::make_unique<rtsp::FaceAnalyzer>();
     faceAnalyzer->initialize(config.faceDetectionOptions);
     std::vector<std::unique_ptr<rtsp::StreamSession>> streams;
-<<<<<<< HEAD
     streams.reserve(streamCount);
     std::vector<MultiStreamRuntime> streamRuntimes(streamCount);
-=======
-    streams.reserve(requestedStreamCount);
->>>>>>> f04e4789eef1131313b8a3ca66964798db6d50f7
 
-    for (size_t index = 0; index < requestedStreamCount; ++index) {
+    for (size_t index = 0; index < streamCount; ++index) {
         rtsp::StreamSessionOptions options;
         options.url = config.rtspUrls[index];
         options.connectionOptions = config.rtspOptions;
         options.hardwareDecodeBackend = config.hwDecodeBackend;
-        options.audioEnabled = index == 0 && config.audioOptions.enabled;
+        options.audioEnabled = false;
         options.videoEnabled = true;
         options.hardwareFrameOutput = false;
-        options.forwardAudioToPlayer = index == 0 && config.audioOptions.enabled;
-        options.audioPlayer = audioPlayer.get();
         options.jitterMaxSize = config.jitterMaxSize;
         options.jitterLatencyMs = config.jitterLatencyMs;
         options.streamIndex = index;
         streams.push_back(std::make_unique<rtsp::StreamSession>(options));
     }
-
-    std::vector<bool> streamAvailable(streams.size(), false);
-    std::vector<uint32_t> reconnectDelayMs(
-        streams.size(), std::max<uint32_t>(config.reconnectOptions.initialDelayMs, 1));
-    std::vector<std::chrono::steady_clock::time_point> nextReconnectTime(
-        streams.size(), std::chrono::steady_clock::now());
-
-    auto scheduleOptionalReconnect = [&](size_t index) {
-        if (index == 0 || index >= streams.size()) {
-            return;
-        }
-        const uint32_t delayMs = reconnectDelayMs[index];
-        nextReconnectTime[index] =
-            std::chrono::steady_clock::now() + std::chrono::milliseconds(delayMs);
-        const uint32_t nextDelay = delayMs == 0 ? 1 : delayMs * 2;
-        reconnectDelayMs[index] = std::min(nextDelay, config.reconnectOptions.maxDelayMs);
-        SPDLOG_INFO("Optional RTSP stream {} will retry in {} ms",
-                    index + 1,
-                    delayMs);
-    };
-
-    auto markOptionalUnavailable = [&](size_t index, const char* reason) {
-        if (index == 0 || index >= streams.size()) {
-            return;
-        }
-        SPDLOG_WARN("Optional RTSP stream {} unavailable{}{}",
-                    index + 1,
-                    reason ? ": " : "",
-                    reason ? reason : "");
-        streams[index]->stopAndDisconnect();
-        streams[index]->resetBufferedFrames();
-        streams[index]->resetStats();
-        streamAvailable[index] = false;
-        if (config.reconnectOptions.enabled) {
-            scheduleOptionalReconnect(index);
-        }
-    };
-
-    auto tryConnectOptionalStream = [&](size_t index) {
-        if (index == 0 || index >= streams.size()) {
-            return false;
-        }
-        SPDLOG_INFO("Connecting optional RTSP stream {}: {}", index + 1, streams[index]->url());
-        if (!streams[index]->connect()) {
-            markOptionalUnavailable(index, "connect failed");
-            return false;
-        }
-        streams[index]->start();
-        streamAvailable[index] = true;
-        reconnectDelayMs[index] = std::max<uint32_t>(config.reconnectOptions.initialDelayMs, 1);
-        SPDLOG_INFO("Optional RTSP stream {} active", index + 1);
-        return true;
-    };
 
     std::unique_ptr<rtsp::StreamSession> audioStream;
     const bool useSeparateAudio = config.audioOptions.enabled && !config.audioRtspUrl.empty();
@@ -416,11 +359,10 @@ int runMultiStream(const rtsp::AppConfig& config) {
         options.audioPlayer = audioPlayer.get();
         options.jitterMaxSize = config.jitterMaxSize;
         options.jitterLatencyMs = config.jitterLatencyMs;
-        options.streamIndex = requestedStreamCount;
+        options.streamIndex = streamCount;
         audioStream = std::make_unique<rtsp::StreamSession>(options);
     }
 
-<<<<<<< HEAD
     size_t onlineStreamCount = 0;
     for (size_t index = 0; index < streams.size(); ++index) {
         auto& stream = *streams[index];
@@ -429,21 +371,6 @@ int runMultiStream(const rtsp::AppConfig& config) {
             streamRuntimes[index].reconnectDelayMs = config.reconnectOptions.initialDelayMs;
             ++onlineStreamCount;
             continue;
-=======
-    if (streams.empty()) {
-        SPDLOG_ERROR("No RTSP streams configured");
-        return -1;
-    }
-
-    if (!connectStreamWithRetry(*streams.front(), config.reconnectOptions, *renderer, false, true)) {
-        return -1;
-    }
-    streamAvailable[0] = true;
-
-    for (size_t index = 1; index < streams.size(); ++index) {
-        if (!tryConnectOptionalStream(index) && !config.reconnectOptions.enabled) {
-            SPDLOG_INFO("Optional RTSP stream {} disabled after initial failure", index + 1);
->>>>>>> f04e4789eef1131313b8a3ca66964798db6d50f7
         }
 
         SPDLOG_WARN("RTSP stream {} unavailable at startup; will retry in background",
@@ -492,69 +419,73 @@ int runMultiStream(const rtsp::AppConfig& config) {
         }
     }
 
-<<<<<<< HEAD
-    int windowWidth = 0;
-    int windowHeight = 0;
-    for (size_t index = 0; index < streams.size(); ++index) {
-        if (!streamRuntimes[index].online) {
-            continue;
+    auto rendererSizeForSlots = [&](size_t slotCount) {
+        int baseWidth = 0;
+        int baseHeight = 0;
+        for (size_t index = 0; index < streams.size(); ++index) {
+            if (!streamRuntimes[index].online) {
+                continue;
+            }
+
+            const auto& stream = streams[index];
+            int streamWidth = stream->latestFrame ? stream->latestFrame->width
+                                                  : stream->client().getWidth();
+            int streamHeight = stream->latestFrame ? stream->latestFrame->height
+                                                   : stream->client().getHeight();
+            if (streamWidth <= 0) {
+                streamWidth = config.width;
+            }
+            if (streamHeight <= 0) {
+                streamHeight = config.height;
+            }
+
+            baseWidth = std::max(baseWidth, streamWidth);
+            baseHeight = std::max(baseHeight, streamHeight);
         }
-        const auto& stream = streams[index];
-        windowWidth += std::max(stream->client().getWidth(), 1);
-        windowHeight = std::max(windowHeight, std::max(stream->client().getHeight(), 1));
-    }
-    if (onlineStreamCount == 0) {
-        windowWidth = config.width;
-        windowHeight = config.height;
-    }
-    windowWidth = std::clamp(windowWidth, 640, 1920);
-    windowHeight = std::clamp(windowHeight, 360, 1080);
+
+        if (baseWidth <= 0) {
+            baseWidth = config.width;
+        }
+        if (baseHeight <= 0) {
+            baseHeight = config.height;
+        }
+
+        const size_t clampedSlots = std::max<size_t>(std::min<size_t>(slotCount, 2), 1);
+        return std::make_pair(
+            std::clamp(baseWidth * static_cast<int>(clampedSlots), 640, 1920),
+            std::clamp(baseHeight, 360, 1080));
+    };
+
+    size_t rendererSlotCount = std::max<size_t>(onlineStreamCount, 1);
+    const auto [windowWidth, windowHeight] = rendererSizeForSlots(rendererSlotCount);
     if (!renderer->initialize(windowWidth, windowHeight, "RTSP Player - Adaptive View")) {
         SPDLOG_ERROR("Failed to initialize multi-stream renderer");
         return -1;
     }
 
-    SPDLOG_INFO("Adaptive RTSP streaming started, press ESC or Q to quit");
-=======
-    const int detectedPrimaryWidth = streams.front()->client().getWidth();
-    const int detectedPrimaryHeight = streams.front()->client().getHeight();
-    const int primaryWidth = detectedPrimaryWidth > 0 ? detectedPrimaryWidth : config.width;
-    const int primaryHeight = detectedPrimaryHeight > 0 ? detectedPrimaryHeight : config.height;
-    const auto activeStreamCount = static_cast<int>(
-        std::max<size_t>(std::count(streamAvailable.begin(), streamAvailable.end(), true), 1));
-    int windowWidth = primaryWidth * activeStreamCount;
-    int windowHeight = primaryHeight;
-    windowWidth = std::clamp(windowWidth, 640, 1920);
-    windowHeight = std::clamp(windowHeight, 360, 1080);
-    size_t rendererSlotCount = 0;
-    auto initializeRendererForSlotCount = [&](size_t slotCount) {
-        const size_t clampedSlotCount = std::max<size_t>(std::min<size_t>(slotCount, 2), 1);
-        const int layoutWidth =
-            std::clamp(primaryWidth * static_cast<int>(clampedSlotCount), 640, 1920);
-        const int layoutHeight = std::clamp(primaryHeight, 360, 1080);
-        const std::string windowTitle =
-            clampedSlotCount > 1 ? "RTSP Player - Dual View" : "RTSP Player";
+    auto rebuildRendererForSlots = [&](size_t slotCount, const char* reason) {
+        const size_t clampedSlots = std::max<size_t>(std::min<size_t>(slotCount, 2), 1);
+        const auto [layoutWidth, layoutHeight] = rendererSizeForSlots(clampedSlots);
+        const std::string title =
+            clampedSlots > 1 ? "RTSP Player - Dual View" : "RTSP Player";
 
+        SPDLOG_WARN("Rebuilding renderer for {} active stream(s): {}",
+                    clampedSlots,
+                    reason ? reason : "unspecified");
         if (renderer && renderer->isInitialized()) {
             renderer->close();
         }
         renderer = createRenderer(config, !usesOpenGlRenderer);
-        if (!renderer->initialize(layoutWidth, layoutHeight, windowTitle)) {
-            SPDLOG_ERROR("Failed to initialize renderer for {} active stream(s)",
-                         clampedSlotCount);
+        if (!renderer->initialize(layoutWidth, layoutHeight, title)) {
+            SPDLOG_ERROR("Failed to rebuild renderer for {} active stream(s)", clampedSlots);
             return false;
         }
-        rendererSlotCount = clampedSlotCount;
-        SPDLOG_INFO("Renderer layout active streams: {}", rendererSlotCount);
+
+        rendererSlotCount = clampedSlots;
         return true;
     };
 
-    if (!initializeRendererForSlotCount(static_cast<size_t>(activeStreamCount))) {
-        return -1;
-    }
-
-    SPDLOG_INFO("{} RTSP stream(s) started, press ESC or Q to quit", streams.size());
->>>>>>> f04e4789eef1131313b8a3ca66964798db6d50f7
+    SPDLOG_INFO("Adaptive RTSP streaming started, press ESC or Q to quit");
 
     while (g_running && renderer->handleEvents()) {
         bool hasNewVideoFrame = false;
@@ -574,16 +505,8 @@ int runMultiStream(const rtsp::AppConfig& config) {
             tryConnectSeparateAudio();
         }
 
-        for (size_t index = 1; index < streams.size(); ++index) {
-            if (!streamAvailable[index] && config.reconnectOptions.enabled &&
-                loopNow >= nextReconnectTime[index]) {
-                tryConnectOptionalStream(index);
-            }
-        }
-
         for (size_t index = 0; index < streams.size(); ++index) {
             auto& stream = *streams[index];
-<<<<<<< HEAD
             auto& runtime = streamRuntimes[index];
             pollReconnect(stream, runtime, config.reconnectOptions);
             topologyChanged = topologyChanged || runtime.topologyChanged;
@@ -598,28 +521,8 @@ int runMultiStream(const rtsp::AppConfig& config) {
                                   runtime,
                                   config.reconnectOptions,
                                   true);
-=======
-            if (!streamAvailable[index]) {
-                continue;
-            }
-            if (!stream.isRunning()) {
-                SPDLOG_WARN("RTSP stream {} receive loop stopped", index + 1);
->>>>>>> f04e4789eef1131313b8a3ca66964798db6d50f7
                 if (index == 0) {
-                    stream.stopAndDisconnect();
-                    stream.resetBufferedFrames();
                     audioPlayer->reset();
-<<<<<<< HEAD
-=======
-                    if (!config.reconnectOptions.enabled ||
-                        !connectStreamWithRetry(stream, config.reconnectOptions, *renderer, true, true)) {
-                        g_running = false;
-                        break;
-                    }
-                    streamAvailable[index] = true;
-                } else {
-                    markOptionalUnavailable(index, "receive loop stopped");
->>>>>>> f04e4789eef1131313b8a3ca66964798db6d50f7
                 }
                 continue;
             }
@@ -711,7 +614,6 @@ int runMultiStream(const rtsp::AppConfig& config) {
         }
 
         std::vector<std::shared_ptr<rtsp::MediaFrame>> frames;
-<<<<<<< HEAD
         frames.reserve(streamCount);
         std::vector<size_t> originalToActiveSlot(streamCount, std::numeric_limits<size_t>::max());
         bool hasAnyFrame = false;
@@ -752,46 +654,29 @@ int runMultiStream(const rtsp::AppConfig& config) {
 
             renderer->setPlaybackStats(streams[statsStreamIndex]->stats);
             renderer->setFaceOverlays(remappedOverlays);
-            renderer->render(frames);
+            const size_t activeSlotCount = std::max<size_t>(frames.size(), 1);
+            if (usesVulkanRenderer && topologyChanged && activeSlotCount != rendererSlotCount) {
+                if (!rebuildRendererForSlots(activeSlotCount, "stream topology changed")) {
+                    g_running = false;
+                    break;
+                }
+            }
+
+            bool rendered = renderer->render(frames);
+            if (!rendered && usesVulkanRenderer) {
+                SPDLOG_WARN("Vulkan render failed; rebuilding renderer and retrying once");
+                if (!rebuildRendererForSlots(activeSlotCount, "Vulkan render failure")) {
+                    g_running = false;
+                    break;
+                }
+                rendered = renderer->render(frames);
+                if (!rendered) {
+                    SPDLOG_ERROR("Vulkan render still failed after renderer rebuild");
+                }
+            }
 
             for (size_t index = 0; index < streamCount; ++index) {
                 if (streamRuntimes[index].online) {
-=======
-        frames.reserve(streams.size());
-        bool hasAnyFrame = false;
-        for (size_t index = 0; index < streams.size(); ++index) {
-            if (!streamAvailable[index]) {
-                continue;
-            }
-            if (!streams[index]->latestFrame) {
-                continue;
-            }
-            frames.push_back(streams[index]->latestFrame);
-            hasAnyFrame = true;
-        }
-
-        if (hasAnyFrame && hasNewVideoFrame) {
-            if (usesVulkanRenderer && frames.size() != rendererSlotCount) {
-                SPDLOG_INFO("Reinitializing Vulkan renderer for {} active stream(s)",
-                            frames.size());
-                if (!initializeRendererForSlotCount(frames.size())) {
-                    g_running = false;
-                    break;
-                }
-            }
-            renderer->setPlaybackStats(streams.front()->stats);
-            renderer->setFaceOverlays(faceAnalyzer->latestResults());
-            if (!renderer->render(frames) && usesVulkanRenderer) {
-                SPDLOG_WARN("Vulkan render failed; rebuilding renderer");
-                if (!initializeRendererForSlotCount(frames.size())) {
-                    g_running = false;
-                    break;
-                }
-            }
-
-            for (size_t index = 0; index < streams.size(); ++index) {
-                if (streamAvailable[index]) {
->>>>>>> f04e4789eef1131313b8a3ca66964798db6d50f7
                     streams[index]->updateInputFpsIfDue();
                 }
             }
