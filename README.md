@@ -1,71 +1,121 @@
-cd C:\Users\dkw\.a_dkwrtc\rtsp
+# RTSP Player
 
-E:\vcpkg\vcpkg.exe install ffmpeg:x64-windows sdl2:x64-windows yaml-cpp:x64-windows spdlog:x64-windows vulkan-headers:x64-windows vulkan-loader:x64-windows shaderc:x64-windows
+Windows RTSP 播放器，基于 FFmpeg 解码，支持 SDL/OpenGL/Vulkan 渲染、音频播放、音视频同步、断线重连、截图录制、双路分屏和 SCRFD ONNX 人脸检测 overlay。
 
+## 功能特性
+
+- RTSP over TCP/UDP，支持低延迟连接参数。
+- SDL、OpenGL、Vulkan 三种渲染后端。
+- NV12 渲染路径，OpenGL/Vulkan 保持视频宽高比。
+- 可选 NVIDIA NVDEC/CUDA 硬解，失败时回退到 d3d11va/dxva2 或软件解码。
+- 音频解码、48 kHz stereo S16 重采样和 SDL 播放。
+- 以音频时钟为主的音视频同步、jitter buffer 和晚帧丢弃。
+- 双路 RTSP 左右分屏，第二路断开后自动隐藏并后台重连。
+- 截图、录制、运行时滤镜切换。
+- SCRFD ONNX 人脸检测，支持 ONNX Runtime CPU/CUDA provider。
+- 本机摄像头 MediaMTX + FFmpeg 推流辅助脚本。
+
+## 环境要求
+
+- Windows 10/11
+- Visual Studio 2022 C++ toolchain
+- CMake 3.21 或更新版本
+- vcpkg
+- Vulkan SDK 或可用的 Vulkan loader/runtime
+- 可选：NVIDIA GPU、CUDA Toolkit、cuDNN、带 `nvcodec` feature 的 FFmpeg
+
+项目依赖由 [vcpkg.json](vcpkg.json) 管理。确保 `vcpkg` 已在 `PATH` 中，或设置了 `VCPKG_ROOT`：
+
+```powershell
+$env:VCPKG_ROOT = "E:\vcpkg"
+```
+
+## 构建
+
+推荐使用项目脚本：
+
+```powershell
 .\scripts\build.ps1
+```
 
-只重新构建：
+只重新构建，不重新配置：
 
+```powershell
 .\scripts\build.ps1 -SkipConfigure
+```
 
-切换 OpenGL 渲染：
+也可以直接使用 CMake presets：
 
-编辑 config\config.yaml：
+```powershell
+cmake --preset windows-vcpkg
+cmake --build --preset windows-vcpkg-release
+ctest --preset windows-vcpkg-release
+```
 
-renderer: "opengl"
+Debug 构建：
 
-切换 Vulkan 渲染：
+```powershell
+cmake --build --preset windows-vcpkg-debug
+```
 
-编辑 config\config.yaml：
+如果 `build-vcpkg` 是在加入 `vcpkg.json` 之前生成的，vcpkg 不能把该目录原地切换到 manifest mode。删除 `build-vcpkg` 后重新运行 `.\scripts\build.ps1`，即可使用 `vcpkg.json` 自动恢复依赖。
 
-renderer: "vulkan"
+## 启用 CUDA/NVDEC
 
-Vulkan 后端支持 CPU NV12 帧上传和 shader 转 RGB，使用 SDL 创建 Vulkan 窗口并保持视频宽高比。启用 CUDA 硬解时，Vulkan 会通过 CUDA/Vulkan external memory buffer 在 GPU 侧拷贝 NV12 平面，再拷入现有 Y/UV 采样纹理。Vulkan 也支持截图、录制和运行时滤镜切换。
-
-启用 NVIDIA NVDEC/CUDA 硬件解码：
-
-hw_decode: "cuda"
-
-如果当前 FFmpeg、驱动或显卡不支持 CUDA 硬解，会自动尝试 d3d11va/dxva2，再回退到软件解码。Windows/vcpkg 构建需要 FFmpeg 的 `nvcodec` feature，否则 `h264_cuvid` 不会出现在播放器实际加载的 `avcodec-*.dll` 里：
+Windows/vcpkg 构建需要 FFmpeg 的 `nvcodec` feature，否则 `h264_cuvid` 等 CUDA decoder 不会出现在播放器实际加载的 `avcodec-*.dll` 中。
 
 ```powershell
 .\scripts\build.ps1 -EnableCudaFfmpeg
 ```
 
-该命令会安装/重建 `ffmpeg[nvcodec]`，并重新构建播放器。构建后可在 `build-vcpkg\bin\Release\avcodec-62.dll` 中检查 `h264_cuvid`，或启动播放器确认日志中出现 `Selected hardware decoder: h264_cuvid` 和 `Hardware decode active: cuda`。
-
-OpenGL/Vulkan 播放会尽量保持 CUDA 解码帧给渲染器；启用人脸检测时，只在 `detect_every_n_frames` 抽样帧上回读一份 CPU NV12 供 SCRFD 预处理。双路显示支持 `CUDA_NV12` 帧：OpenGL 逐路通过 CUDA/PBO 上传后绘制，Vulkan 逐路通过 CUDA/Vulkan external memory buffer 上传后合成。
-
-启用 SCRFD ONNX CUDA 人脸检测实验后端：
+然后在 [config/config.yaml](config/config.yaml) 中启用：
 
 ```yaml
-face_detection:
-  enabled: true
-  backend: "onnx_cuda"
+hw_decode: "cuda"
 ```
 
-`onnx_cuda` 会先检查 ONNX Runtime 的 `CUDAExecutionProvider`，可用时使用 GPU 推理；不可用、初始化失败或缺少 provider DLL 时会记录 warning 并自动回退到 `onnx_cpu`。Windows 下需要确保 `onnxruntime_providers_cuda.dll`、`onnxruntime_providers_shared.dll` 以及匹配的 CUDA/cuDNN 运行库能被 exe 找到。
-
-检查 CUDA provider 是否真的可用：
-
-```powershell
-cmake --build build-vcpkg --config Release --target onnx_cuda_probe
-$env:Path = "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.2\bin\x64;C:\Program Files\NVIDIA\CUDNN\v9.22\bin\13.2\x64;$env:Path"
-.\build-vcpkg\bin\Release\onnx_cuda_probe.exe models\det_500m.onnx
-```
-
-看到下面两行就表示 ONNX Runtime CUDA session 已经创建成功：
+播放器会优先尝试 CUDA，失败时自动尝试 d3d11va/dxva2，再回退到软件解码。启动后可在日志中确认：
 
 ```text
-available_providers=CUDAExecutionProvider,CPUExecutionProvider
-cuda_session=ok
+Selected hardware decoder: h264_cuvid
+Hardware decode active: cuda
 ```
 
-OpenGL 会保持视频原始宽高比，窗口比例不匹配时自动居中并显示黑边。
+## 运行
 
-OpenGL 和 Vulkan 渲染路径都使用 NV12 两纹理：Y 平面 + 交错 UV 平面。NV12 更贴近硬件解码输出，避免把 UV 拆成两个纹理后再上传。
+使用配置文件中的默认 RTSP 地址启动：
 
-RTSP 连接参数：
+```powershell
+.\build-vcpkg\bin\Release\rtsp_player.exe
+```
+
+启动时传入单路 RTSP 地址：
+
+```powershell
+.\build-vcpkg\bin\Release\rtsp_player.exe rtsp://你的摄像头IP:554/你的路径
+```
+
+启动时传入双路 RTSP 地址：
+
+```powershell
+.\build-vcpkg\bin\Release\rtsp_player.exe rtsp://第一个摄像头IP:554/你的路径 rtsp://第二个摄像头IP:554/你的路径
+```
+
+当前多路管理只使用前两个 RTSP 地址。第一路是主视频；第二路是可选视频，启动或运行中不可用时会临时隐藏，并按退避策略后台重连，恢复后自动回到分屏。
+
+## 配置
+
+主要配置位于 [config/config.yaml](config/config.yaml)。
+
+### 渲染后端
+
+```yaml
+renderer: "vulkan" # sdl, opengl, vulkan
+```
+
+Vulkan 后端支持 CPU NV12 帧上传和 shader 转 RGB。启用 CUDA 硬解时，Vulkan 会尝试通过 CUDA/Vulkan external memory buffer 在 GPU 侧拷贝 NV12 平面，再拷入现有 Y/UV 采样纹理。OpenGL/Vulkan 双路显示均支持 `CUDA_NV12` 帧。
+
+### RTSP 连接
 
 ```yaml
 rtsp:
@@ -73,14 +123,14 @@ rtsp:
   timeout_ms: 5000        # 连接和读写超时
   buffer_size: 262144     # FFmpeg 输入缓冲区
   low_latency:
-    enabled: true         # 启用 nobuffer/low_delay 等低延迟选项
+    enabled: true
     max_delay_ms: 50
     analyze_duration_ms: 0
     probe_size_bytes: 32768
     reorder_queue_size: 0
 ```
 
-音频与音视频同步：
+### 音频与同步
 
 ```yaml
 audio:
@@ -93,43 +143,22 @@ sync:
   enabled: true
   max_wait_ms: 16
   late_drop_ms: 250
+  audio_offset_ms: 0
 ```
 
-播放器会解码 RTSP 中的音频 track，重采样为 48kHz stereo S16 后交给 SDL 播放。开启音频时，视频以音频时钟为主时钟：视频早到会短暂等待，晚到超过 `late_drop_ms` 会丢帧追赶。
+开启音频时，视频以音频时钟为主时钟：视频早到会短暂等待，晚到超过 `late_drop_ms` 会丢帧追赶。`audio_offset_ms` 为正数时让视频相对音频晚显示，为负数时让视频更早显示。
 
-视频 jitter buffer 默认 `latency_ms: 30`，音频也保留很短的 `target_latency_ms: 30` 预缓冲；音视频同步逻辑仍然启用。如果想更稳，可以把二者一起调到 `300` 或 `1000`。
+### Jitter Buffer
 
-OpenGL 初始滤镜：
+```yaml
+jitter_buffer:
+  max_size: 40
+  latency_ms: 50
+```
 
-opengl_filters:
-  - warm
-  - contrast
+低延迟场景可降低 `latency_ms`；弱网或抖动明显时建议把视频 jitter buffer 和 `audio.target_latency_ms` 一起调高，例如 `300` 或 `1000`。
 
-可选值：none, grayscale, warm, invert, contrast, saturation。OpenGL 和 Vulkan 运行时按 F 都可以切换单滤镜预览。
-
-热键：
-
-- F：切换单滤镜预览
-- S：保存当前最终画面截图到 captures 目录
-- R：开始/停止录制，输出带滤镜的 MJPEG AVI 到 captures 目录
-- ESC/Q：退出
-
-断线重连：
-
-reconnect:
-  enabled: true
-  initial_delay_ms: 1000
-  max_delay_ms: 5000
-
-只重新构建：
-
-.\scripts\build.ps1 -SkipConfigure
-
-启动时传真实 RTSP 地址：
-
-.\build-vcpkg\bin\Release\rtsp_player.exe rtsp://你的摄像头IP:554/你的路径
-
-双路 Vulkan 分屏显示：
+### 双路分屏
 
 ```yaml
 renderer: "vulkan"
@@ -138,13 +167,7 @@ rtsp_urls:
   - "rtsp://第二个摄像头IP:554/你的路径"
 ```
 
-也可以直接传两个地址启动：
-
-.\build-vcpkg\bin\Release\rtsp_player.exe rtsp://第一个摄像头IP:554/你的路径 rtsp://第二个摄像头IP:554/你的路径
-
-当前多路管理只取前两个 RTSP 地址。第一路是主视频，连接失败会按 `reconnect` 配置重连；第二路是可选视频，启动时或运行中不可用都会临时隐藏，并按退避策略后台重连，恢复后自动回到左右分屏。多路模式会关闭硬件帧直通，让 FFmpeg 输出 CPU NV12 帧给 OpenGL/Vulkan 上传。
-
-双路本机推流会把音频拆成单独一路，视频 RTSP 只包含 H264：
+双路本机推流时，音频可以单独走一路 RTSP，避免拖慢第一路视频：
 
 ```yaml
 rtsp_urls:
@@ -153,92 +176,141 @@ rtsp_urls:
 audio_rtsp_url: "rtsp://127.0.0.1:8554/audio"
 ```
 
-三路 RTSP 的音视频同步使用本机接收时间做软同步。可以在 `config/config.yaml` 中微调：
+### OpenGL 滤镜
 
 ```yaml
-sync:
+opengl_filters:
+  - warm
+  - contrast
+```
+
+可选值：`none`、`grayscale`、`warm`、`invert`、`contrast`、`saturation`。OpenGL 和 Vulkan 运行时都可以按 `F` 切换单滤镜预览。
+
+### 断线重连
+
+```yaml
+reconnect:
   enabled: true
-  max_wait_ms: 16
-  late_drop_ms: 250
-  audio_offset_ms: 0
+  initial_delay_ms: 1000
+  max_delay_ms: 5000
 ```
 
-`audio_offset_ms` 为正数时会让第一路视频等待更久，适合音频听起来偏晚的情况；为负数时视频会更早显示。
+## 人脸检测
 
-本机摄像头已经配置为 MediaMTX + FFmpeg 推流，MediaMTX 位于：
-
-..\mediamtx
-
-启动本机摄像头 RTSP 流：
-
-.\scripts\start_webcam_rtsp.ps1
-
-脚本默认会把本机摄像头和内置麦克风推到同一个 RTSP URL。若要关闭音频：
-
-.\scripts\start_webcam_rtsp.ps1 -NoAudio
-
-同时推送内置摄像头和罗技 USB 摄像头：
-
-.\scripts\start_webcam_rtsp.ps1 -Dual
-
-如果没有插入第二个 USB 摄像头，脚本会先按单路推流，同时启动后台 watcher 等待第二摄像头；第二摄像头插回后 watcher 会自动恢复 `webcam2` 推流。播放器在配置为双路时会把第二路当作可选流处理，第二路不可用时显示第一路，第二路恢复后自动回到分屏。
-
-CUDA 人脸检测运行方式：
-
-先安装带 NVDEC/NVCODEC 支持的 FFmpeg 依赖：
-
-```powershell
-E:\vcpkg\vcpkg.exe install "ffmpeg[nvcodec]:x64-windows" --recurse
-.\scripts\build.ps1
-```
-
-确认 `config\config.yaml` 中启用 CUDA 硬解和 ONNX CUDA 人脸检测：
+启用 SCRFD ONNX 后端：
 
 ```yaml
-hw_decode: "cuda"
-
 face_detection:
   enabled: true
-  backend: "onnx_cuda"
+  backend: "onnx_cuda" # onnx_cpu, onnx_cuda, tensorrt
   model: "models/det_500m.onnx"
+  input_width: 640
+  input_height: 640
+  detect_every_n_frames: 5
+  score_threshold: 0.5
+  nms_threshold: 0.4
 ```
 
-运行前把 CUDA Toolkit 和 cuDNN 运行库加入当前 PowerShell 的 `PATH`：
+`onnx_cuda` 会先检查 ONNX Runtime 的 `CUDAExecutionProvider`。可用时使用 GPU 推理；不可用、初始化失败或缺少 provider DLL 时记录 warning 并自动回退到 `onnx_cpu`。
 
-```powershell
-$env:Path = "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.2\bin\x64;C:\Program Files\NVIDIA\CUDNN\v9.22\bin\13.2\x64;$env:Path"
-```
-
-先用探针确认 ONNX Runtime CUDA session 能创建成功：
+检查 ONNX Runtime CUDA provider：
 
 ```powershell
 cmake --build build-vcpkg --config Release --target onnx_cuda_probe
+$env:Path = "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.2\bin\x64;C:\Program Files\NVIDIA\CUDNN\v9.22\bin\13.2\x64;$env:Path"
 .\build-vcpkg\bin\Release\onnx_cuda_probe.exe models\det_500m.onnx
 ```
 
-看到 `cuda_session=ok` 后，再启动播放器：
+成功时会看到：
+
+```text
+available_providers=CUDAExecutionProvider,CPUExecutionProvider
+cuda_session=ok
+```
+
+Windows 下需要确保 `onnxruntime_providers_cuda.dll`、`onnxruntime_providers_shared.dll` 以及匹配的 CUDA/cuDNN 运行库能被 exe 找到。
+
+## 本机摄像头 RTSP 推流
+
+辅助脚本假设 MediaMTX 位于仓库同级目录的 `..\mediamtx`。
+
+启动本机摄像头 RTSP 流：
 
 ```powershell
-.\build-vcpkg\bin\Release\rtsp_player.exe
+.\scripts\start_webcam_rtsp.ps1
 ```
 
-默认会输出：
+关闭音频：
 
-```yaml
-rtsp_urls:
-  - "rtsp://127.0.0.1:8554/webcam"
-  - "rtsp://127.0.0.1:8554/webcam2"
-audio_rtsp_url: "rtsp://127.0.0.1:8554/audio"
+```powershell
+.\scripts\start_webcam_rtsp.ps1 -NoAudio
 ```
 
-双路推流时两个视频 URL 都只推 H264，音频单独推到 `audio_rtsp_url`。若设备名不同，可以传：
+同时推送内置摄像头和第二个 USB 摄像头：
 
+```powershell
+.\scripts\start_webcam_rtsp.ps1 -Dual
+```
+
+指定第二个摄像头设备名：
+
+```powershell
 .\scripts\start_webcam_rtsp.ps1 -Dual -SecondCameraName "Logi C270 HD WebCam"
+```
 
-然后运行播放器：
-
-.\build-vcpkg\bin\Release\rtsp_player.exe
+如果启动双路但第二个摄像头未插入，脚本会先按单路推流，并启动后台 watcher 等待第二摄像头；第二摄像头恢复后会自动推送到 `webcam2`。
 
 停止本机摄像头 RTSP 流：
 
+```powershell
 .\scripts\stop_webcam_rtsp.ps1
+```
+
+## 快捷键
+
+| 按键 | 功能 |
+| --- | --- |
+| `F` | 切换单滤镜预览 |
+| `S` | 保存当前最终画面截图到 `captures/` |
+| `R` | 开始/停止录制，输出到 `captures/` |
+| `ESC` / `Q` | 退出 |
+
+## 输出目录
+
+- `captures/`：截图和录制文件
+- `logs/`：运行日志
+- `build-vcpkg/`：CMake 构建目录
+
+这些目录默认被 `.gitignore` 忽略。
+
+## 开发与测试
+
+运行单元测试：
+
+```powershell
+ctest --preset windows-vcpkg-release
+```
+
+构建 ONNX CUDA provider 探针：
+
+```powershell
+cmake --build build-vcpkg --config Release --target onnx_cuda_probe
+```
+
+主要代码结构：
+
+- `src/rtsp_client.cpp`：RTSP 输入、FFmpeg 解复用、音视频解码、硬解回退和录制。
+- `src/player_runner.cpp`：单路/双路播放主循环、同步、重连和渲染调度。
+- `src/rendering/`：SDL、OpenGL、Vulkan 渲染后端。
+- `src/onnx_scrfd_detector.cpp`：SCRFD ONNX 推理与后处理。
+- `tests/unit_tests.cpp`：配置、jitter buffer 和同步逻辑测试。
+
+
+作者一般运行流程：
+
+```powershell
+cmake --preset windows-vcpkg
+.\scripts\start_webcam_rtsp.ps1 -Dual
+.\build-vcpkg\bin\Release\rtsp_player.exe
+.\scripts\stop_webcam_rtsp.ps1
+```

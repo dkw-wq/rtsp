@@ -1,0 +1,40 @@
+{
+  "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
+  "name": "rtsp-player",
+  "version-string": "1.0.0",
+  "description": "Low-latency RTSP player with SDL/OpenGL/Vulkan rendering, audio sync, recording, and ONNX face detection.",
+  "dependencies": [
+    {
+      "name": "ffmpeg",
+      "features": [
+        "avcodec",
+        "avdevice",
+        "avfilter",
+        "avformat",
+        "srt",
+        "swresample",
+        "swscale"
+      ]
+    },
+    "sdl2",
+    "yaml-cpp",
+    "spdlog",
+    "vulkan-headers",
+    "vulkan-loader",
+    "shaderc",
+    "onnxruntime"
+  ],
+  "features": {
+    "cuda-ffmpeg": {
+      "description": "Build FFmpeg with NVIDIA nvcodec/NVDEC support for CUDA hardware decoding.",
+      "dependencies": [
+        {
+          "name": "ffmpeg",
+          "features": [
+            "nvcodec"
+          ]
+        }
+      ]
+    }
+  }
+}

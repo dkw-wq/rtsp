@@ -2,3 +2,5 @@ build-vcpkg/
 cmake/
 captures/
 logs/
+CMakeUserPresets.json
+vcpkg_installed/
