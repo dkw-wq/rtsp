@@ -1,8 +1,14 @@
 #include "config_loader.hpp"
 #include "jitter_buffer.hpp"
+#include "rtsp_ffmpeg_utils.hpp"
+#include "rtsp_frame_converter.hpp"
+#include "rtsp_hardware_decoder.hpp"
 #include "sync_controller.hpp"
 
+#include <algorithm>
+#include <array>
 #include <chrono>
+#include <cmath>
 #include <cstdlib>
 #include <exception>
 #include <filesystem>
@@ -12,6 +18,12 @@
 #include <stdexcept>
 #include <string>
 #include <thread>
+
+extern "C" {
+#include <libavcodec/avcodec.h>
+#include <libavutil/frame.h>
+#include <libavutil/pixfmt.h>
+}
 
 namespace {
 
@@ -191,6 +203,188 @@ void testCommandLineOverrideSingleUrl() {
     require(config.rtspUrls[0] == "rtsp://override/one", "single command URL should replace first stream");
 }
 
+void testCommandLineOverrideTwoUrls() {
+    rtsp::AppConfig config;
+    config.rtspUrl = "rtsp://configured/main";
+    config.rtspUrls = {"rtsp://configured/a"};
+    config.rtspUrlsConfigured = true;
+
+    char program[] = "rtsp_player";
+    char firstUrl[] = "rtsp://override/one";
+    char secondUrl[] = "rtsp://override/two";
+    char* argv[] = {program, firstUrl, secondUrl};
+    rtsp::applyCommandLineOverrides(config, 3, argv);
+
+    require(config.rtspUrl == "rtsp://override/one", "two command URLs should set primary URL");
+    require(config.rtspUrls.size() == 2, "two command URLs should replace configured streams");
+    require(config.rtspUrls[0] == "rtsp://override/one", "first command URL should become stream 1");
+    require(config.rtspUrls[1] == "rtsp://override/two", "second command URL should become stream 2");
+}
+
+void testConfigLoaderKeepsDefaultsForInvalidValues() {
+    const auto path = tempYamlPath("rtsp_player_config_invalid_values_test.yaml");
+    {
+        std::ofstream yaml(path);
+        yaml << "width: -1\n"
+             << "height: 0\n"
+             << "rtsp:\n"
+             << "  timeout_ms: -50\n"
+             << "jitter_buffer:\n"
+             << "  max_size: 0\n"
+             << "  latency_ms: -10\n"
+             << "audio:\n"
+             << "  max_queue_ms: 0\n"
+             << "sync:\n"
+             << "  late_drop_ms: 0\n"
+             << "face_detection:\n"
+             << "  score_threshold: 1.5\n"
+             << "  nms_threshold: -0.1\n";
+    }
+
+    const auto config = rtsp::loadAppConfig(path.string());
+    std::filesystem::remove(path);
+
+    require(config.width == -1, "width currently accepts raw configured value");
+    require(config.height == 0, "height currently accepts raw configured value");
+    require(config.rtspOptions.timeoutMs == 5000, "invalid timeout should keep default");
+    require(config.jitterMaxSize == 12, "invalid jitter size should keep default");
+    require(config.jitterLatencyMs == 30, "invalid jitter latency should keep default");
+    require(config.audioOptions.maxQueueMs == 800, "invalid audio max queue should keep default");
+    require(config.syncOptions.lateDropMs == 250, "invalid late drop should keep default");
+    require(config.faceDetectionOptions.scoreThreshold > 0.49F &&
+                config.faceDetectionOptions.scoreThreshold < 0.51F,
+            "invalid face score threshold should keep default");
+    require(config.faceDetectionOptions.nmsThreshold > 0.39F &&
+                config.faceDetectionOptions.nmsThreshold < 0.41F,
+            "invalid face NMS threshold should keep default");
+}
+
+void testConfigLoaderReportsMalformedYaml() {
+    const auto path = tempYamlPath("rtsp_player_config_malformed_test.yaml");
+    {
+        std::ofstream yaml(path);
+        yaml << "rtsp_url: [unterminated\n";
+    }
+
+    const auto config = rtsp::loadAppConfig(path.string());
+    std::filesystem::remove(path);
+
+    require(!config.warning.empty(), "malformed YAML should produce a warning");
+    require(config.rtspUrl == "rtsp://127.0.0.1:8554/webcam",
+            "malformed YAML should keep default RTSP URL");
+}
+
+void testLogLevelParsing() {
+    spdlog::level::level_enum level = spdlog::level::info;
+    require(rtsp::parseLogLevel("TRACE", level), "TRACE should parse case-insensitively");
+    require(level == spdlog::level::trace, "TRACE should map to trace level");
+    require(rtsp::parseLogLevel("warning", level), "warning alias should parse");
+    require(level == spdlog::level::warn, "warning should map to warn level");
+    require(!rtsp::parseLogLevel("verbose", level), "unknown log level should fail");
+}
+
+void testFfmpegConnectionOptionNormalization() {
+    rtsp::RtspConnectionOptions options;
+    options.transport = "QuIc";
+    options.timeoutMs = -10;
+    options.bufferSize = -1;
+    options.maxDelayMs = -2;
+    options.analyzeDurationMs = -3;
+    options.probeSizeBytes = -4;
+    options.reorderQueueSize = -5;
+
+    const auto normalized = rtsp::ffmpeg::normalizeConnectionOptions(options);
+    require(normalized.transport == "tcp", "unknown transport should normalize to tcp");
+    require(normalized.timeoutMs == 1, "timeout should be clamped to at least 1");
+    require(normalized.bufferSize == 0, "buffer size should be clamped non-negative");
+    require(normalized.maxDelayMs == 0, "max delay should be clamped non-negative");
+    require(normalized.analyzeDurationMs == 0, "analyze duration should be clamped non-negative");
+    require(normalized.probeSizeBytes == 0, "probe size should be clamped non-negative");
+    require(normalized.reorderQueueSize == 0, "reorder queue should be clamped non-negative");
+}
+
+void testFfmpegTimestampHelpers() {
+    AVFrame frame{};
+    frame.best_effort_timestamp = AV_NOPTS_VALUE;
+    frame.pts = 42;
+    require(rtsp::ffmpeg::normalizedTimestamp(&frame) == 42,
+            "normalized timestamp should use pts when best effort timestamp is missing");
+
+    frame.best_effort_timestamp = 99;
+    require(rtsp::ffmpeg::normalizedTimestamp(&frame) == 99,
+            "normalized timestamp should prefer best effort timestamp");
+
+    frame.best_effort_timestamp = -1;
+    frame.pts = -1;
+    require(rtsp::ffmpeg::normalizedTimestamp(&frame) == 0,
+            "negative timestamp should normalize to zero");
+}
+
+void testFfmpegCudaDecoderNames() {
+    require(std::string(rtsp::ffmpeg::cudaDecoderName(AV_CODEC_ID_H264)) == "h264_cuvid",
+            "H264 should map to h264_cuvid");
+    require(std::string(rtsp::ffmpeg::cudaDecoderName(AV_CODEC_ID_HEVC)) == "hevc_cuvid",
+            "HEVC should map to hevc_cuvid");
+    require(rtsp::ffmpeg::cudaDecoderName(AV_CODEC_ID_NONE) == nullptr,
+            "unknown codec should not have CUDA decoder mapping");
+}
+
+void testHardwareDecoderContextState() {
+    rtsp::HardwareDecoderContext hardware;
+    hardware.setBackend("none");
+    require(!hardware.requested(), "none backend should not request hardware decode");
+    require(!hardware.active(), "new hardware context should not be active");
+    require(hardware.status() == "off", "new hardware context should start off");
+
+    hardware.setBackend("cuda");
+    require(hardware.requested(), "cuda backend should request hardware decode");
+    hardware.resetForSoftwareFallback();
+    require(hardware.status() == "fallback-cpu", "software fallback should update status");
+    hardware.resetForDisconnect();
+    require(hardware.status() == "not-connected", "disconnect should keep requested backend status");
+
+    const AVCodec* softwareCodec = avcodec_find_decoder(AV_CODEC_ID_H264);
+    if (softwareCodec != nullptr) {
+        hardware.setBackend("none");
+        require(hardware.selectDecoder(AV_CODEC_ID_H264, softwareCodec) == softwareCodec,
+                "non-CUDA backend should keep software decoder");
+    }
+}
+
+void testNv12FrameConverterCopiesNv12Frame() {
+    constexpr int width = 4;
+    constexpr int height = 4;
+    std::array<uint8_t, width * height> yPlane{};
+    std::array<uint8_t, width * height / 2> uvPlane{};
+    for (size_t index = 0; index < yPlane.size(); ++index) {
+        yPlane[index] = static_cast<uint8_t>(index + 1);
+    }
+    for (size_t index = 0; index < uvPlane.size(); ++index) {
+        uvPlane[index] = static_cast<uint8_t>(100 + index);
+    }
+
+    AVFrame frame{};
+    frame.format = AV_PIX_FMT_NV12;
+    frame.width = width;
+    frame.height = height;
+    frame.data[0] = yPlane.data();
+    frame.data[1] = uvPlane.data();
+    frame.linesize[0] = width;
+    frame.linesize[1] = width;
+
+    rtsp::Nv12FrameConverter converter;
+    rtsp::MediaFrame mediaFrame;
+    require(converter.copyFrameAsNv12(&frame, mediaFrame), "NV12 frame copy should succeed");
+    require(mediaFrame.pixelFormat == rtsp::MediaFrame::PixelFormat::NV12,
+            "copied frame should be marked NV12");
+    require(mediaFrame.data.size() == width * height * 3 / 2,
+            "copied NV12 frame should have compact 1.5x image size");
+    require(std::equal(yPlane.begin(), yPlane.end(), mediaFrame.data.begin()),
+            "Y plane bytes should be copied exactly");
+    require(std::equal(uvPlane.begin(), uvPlane.end(), mediaFrame.data.begin() + yPlane.size()),
+            "UV plane bytes should be copied exactly");
+}
+
 void testSyncWaitsForFutureVideoFrame() {
     rtsp::SyncOptions options;
     options.enabled = true;
@@ -256,6 +450,16 @@ int main() {
         runTest("JitterBuffer holds non-key frame until latency", testJitterBufferHoldsUntilLatency);
         runTest("ConfigLoader parses YAML", testConfigLoaderParsesYaml);
         runTest("ConfigLoader applies single URL override", testCommandLineOverrideSingleUrl);
+        runTest("ConfigLoader applies two URL override", testCommandLineOverrideTwoUrls);
+        runTest("ConfigLoader keeps defaults for invalid values",
+                testConfigLoaderKeepsDefaultsForInvalidValues);
+        runTest("ConfigLoader reports malformed YAML", testConfigLoaderReportsMalformedYaml);
+        runTest("Log level parsing", testLogLevelParsing);
+        runTest("FFmpeg normalizes connection options", testFfmpegConnectionOptionNormalization);
+        runTest("FFmpeg timestamp helpers", testFfmpegTimestampHelpers);
+        runTest("FFmpeg CUDA decoder names", testFfmpegCudaDecoderNames);
+        runTest("Hardware decoder context state", testHardwareDecoderContextState);
+        runTest("NV12 frame converter copies NV12 frame", testNv12FrameConverterCopiesNv12Frame);
         runTest("SyncController waits for future video frame", testSyncWaitsForFutureVideoFrame);
         runTest("SyncController drops late frame and uses catch-up frame",
                 testSyncDropsLateFrameAndUsesCatchUpFrame);

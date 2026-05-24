@@ -221,9 +221,15 @@ add_executable(rtsp_unit_tests
     src/config_loader.cpp
     src/sync_controller.cpp
     src/audio_player.cpp
+    src/rtsp_ffmpeg_utils.cpp
+    src/rtsp_frame_converter.cpp
+    src/rtsp_hardware_decoder.cpp
 )
 target_compile_definitions(rtsp_unit_tests PRIVATE SDL_MAIN_HANDLED)
+target_include_directories(rtsp_unit_tests PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_directories(rtsp_unit_tests PRIVATE ${FFMPEG_LIBRARY_DIRS})
 target_link_libraries(rtsp_unit_tests
+    ${FFMPEG_LIBRARIES}
     $<IF:$<TARGET_EXISTS:SDL2::SDL2>,SDL2::SDL2,SDL2::SDL2-static>
     yaml-cpp::yaml-cpp
     spdlog::spdlog
