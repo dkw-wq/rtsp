@@ -77,8 +77,8 @@ public:
             warnQueueLimited("Audio queue exceeded hard limit; resetting queued audio",
                              queuedBeforeMs);
         } else if (queuedBeforeMs > static_cast<uint32_t>(options_.maxQueueMs)) {
-            warnQueueLimited("Audio queue exceeded soft limit; waiting for playback to catch up",
-                             queuedBeforeMs);
+            /*warnQueueLimited("Audio queue exceeded soft limit; waiting for playback to catch up",
+                             queuedBeforeMs);*/
         }
 
         if (SDL_QueueAudio(device_, frame->data.data(),

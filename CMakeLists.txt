@@ -81,6 +81,11 @@ set(SOURCES
     src/app_logging.cpp
     src/player_runner.cpp
     src/rtsp_client.cpp
+    src/rtsp_audio_decoder.cpp
+    src/rtsp_ffmpeg_utils.cpp
+    src/rtsp_frame_converter.cpp
+    src/rtsp_hardware_decoder.cpp
+    src/rtsp_recorder.cpp
     src/jitter_buffer.cpp
     src/audio_player.cpp
     src/frame_capture.cpp
