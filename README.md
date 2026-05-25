@@ -15,6 +15,17 @@ Windows RTSP 播放器，基于 FFmpeg 解码，支持 SDL/OpenGL/Vulkan 渲染�
 - SCRFD ONNX 人脸检测，支持 ONNX Runtime CPU/CUDA provider。
 - 本机摄像头 MediaMTX + FFmpeg 推流辅助脚本。
 
+## 架构概览
+
+![RTSP Player 架构图](docs/architecture.svg)
+
+核心边界：
+
+- `PlayerRunner` 负责单路/双路播放主循环、重连、同步等待和渲染调度。
+- `StreamSession` 封装单路流状态，把 `RtspClient` 输出的视频帧推入 `JitterBuffer`，把音频帧转给 `AudioPlayer`。
+- `RtspClient` 负责 RTSP 连接和收包主循环；音频解码、硬解上下文、NV12 转换和录制分别由独立模块承载。
+- `VideoRenderer` 是渲染后端接口，SDL/OpenGL/Vulkan 共享播放状态和 overlay 输入。
+
 ## 环境要求
 
 - Windows 10/11

@@ -1,0 +1,196 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="760" viewBox="0 0 1280 760" role="img" aria-labelledby="title desc">
+  <title id="title">RTSP Player architecture</title>
+  <desc id="desc">Runtime architecture and data flow for the RTSP Player project.</desc>
+  <defs>
+    <style>
+      .bg { fill: #f7f9fc; }
+      .title { fill: #172033; font: 700 28px "Segoe UI", Arial, sans-serif; }
+      .subtitle { fill: #506070; font: 15px "Segoe UI", Arial, sans-serif; }
+      .lane-title { fill: #2a3446; font: 700 16px "Segoe UI", Arial, sans-serif; }
+      .box-title { fill: #101827; font: 700 15px "Segoe UI", Arial, sans-serif; }
+      .box-text { fill: #465568; font: 12px "Segoe UI", Arial, sans-serif; }
+      .note { fill: #526173; font: 12px "Segoe UI", Arial, sans-serif; }
+      .pill { fill: #ffffff; stroke-width: 1.4; }
+      .lane { fill-opacity: 0.72; stroke-width: 1.2; }
+      .arrow { fill: none; stroke: #526173; stroke-width: 2.1; marker-end: url(#arrow); }
+      .arrow-video { fill: none; stroke: #2f6fed; stroke-width: 2.4; marker-end: url(#arrow-blue); }
+      .arrow-audio { fill: none; stroke: #18a67a; stroke-width: 2.4; marker-end: url(#arrow-green); }
+      .arrow-overlay { fill: none; stroke: #b7791f; stroke-width: 2.2; marker-end: url(#arrow-amber); stroke-dasharray: 7 5; }
+      .arrow-record { fill: none; stroke: #c2410c; stroke-width: 2.2; marker-end: url(#arrow-orange); }
+    </style>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8.8" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#526173"/>
+    </marker>
+    <marker id="arrow-blue" viewBox="0 0 10 10" refX="8.8" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#2f6fed"/>
+    </marker>
+    <marker id="arrow-green" viewBox="0 0 10 10" refX="8.8" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#18a67a"/>
+    </marker>
+    <marker id="arrow-amber" viewBox="0 0 10 10" refX="8.8" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#b7791f"/>
+    </marker>
+    <marker id="arrow-orange" viewBox="0 0 10 10" refX="8.8" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#c2410c"/>
+    </marker>
+    <filter id="shadow" x="-12%" y="-18%" width="124%" height="140%">
+      <feDropShadow dx="0" dy="4" stdDeviation="5" flood-color="#1f2937" flood-opacity="0.13"/>
+    </filter>
+  </defs>
+
+  <rect class="bg" x="0" y="0" width="1280" height="760"/>
+  <text class="title" x="48" y="48">RTSP Player 架构图</text>
+  <text class="subtitle" x="48" y="74">从配置与启动参数进入播放调度层，经 RTSP/FFmpeg 解码、同步和分析后输出到渲染器、截图与录制。</text>
+
+  <rect class="lane" x="42" y="104" width="1196" height="84" rx="10" fill="#e8f2ff" stroke="#b9d5ff"/>
+  <text class="lane-title" x="64" y="132">入口与配置</text>
+
+  <rect class="lane" x="42" y="214" width="1196" height="126" rx="10" fill="#eef2ff" stroke="#c7d2fe"/>
+  <text class="lane-title" x="64" y="242">播放调度</text>
+
+  <rect class="lane" x="42" y="366" width="1196" height="154" rx="10" fill="#ecfdf5" stroke="#bbf7d0"/>
+  <text class="lane-title" x="64" y="394">RTSP 输入与解码</text>
+
+  <rect class="lane" x="42" y="546" width="1196" height="128" rx="10" fill="#fff7ed" stroke="#fed7aa"/>
+  <text class="lane-title" x="64" y="574">同步、分析与输出</text>
+
+  <g filter="url(#shadow)">
+    <rect class="pill" x="80" y="126" width="154" height="44" rx="8" stroke="#7fb3ff"/>
+    <text class="box-title" x="105" y="151">启动参数</text>
+    <text class="box-text" x="105" y="166">RTSP URLs</text>
+
+    <rect class="pill" x="280" y="126" width="164" height="44" rx="8" stroke="#7fb3ff"/>
+    <text class="box-title" x="306" y="151">config.yaml</text>
+    <text class="box-text" x="306" y="166">渲染 / 同步 / AI</text>
+
+    <rect class="pill" x="500" y="124" width="172" height="48" rx="8" stroke="#7fb3ff"/>
+    <text class="box-title" x="528" y="150">ConfigLoader</text>
+    <text class="box-text" x="528" y="166">解析并合并配置</text>
+
+    <rect class="pill" x="735" y="124" width="180" height="48" rx="8" stroke="#7fb3ff"/>
+    <text class="box-title" x="767" y="150">main.cpp</text>
+    <text class="box-text" x="767" y="166">选择播放模式</text>
+  </g>
+
+  <path class="arrow" d="M234 148 H280"/>
+  <path class="arrow" d="M444 148 H500"/>
+  <path class="arrow" d="M672 148 H735"/>
+
+  <g filter="url(#shadow)">
+    <rect class="pill" x="96" y="266" width="166" height="50" rx="8" stroke="#a5b4fc"/>
+    <text class="box-title" x="125" y="291">PlayerRunner</text>
+    <text class="box-text" x="125" y="307">主循环 / 重连</text>
+
+    <rect class="pill" x="334" y="248" width="166" height="50" rx="8" stroke="#a5b4fc"/>
+    <text class="box-title" x="364" y="273">单路播放</text>
+    <text class="box-text" x="364" y="289">runSingleStream</text>
+
+    <rect class="pill" x="334" y="306" width="166" height="50" rx="8" stroke="#a5b4fc"/>
+    <text class="box-title" x="364" y="331">双路播放</text>
+    <text class="box-text" x="364" y="347">runMultiStream</text>
+
+    <rect class="pill" x="574" y="248" width="178" height="50" rx="8" stroke="#a5b4fc"/>
+    <text class="box-title" x="608" y="273">StreamSession 1</text>
+    <text class="box-text" x="608" y="289">主视频流</text>
+
+    <rect class="pill" x="574" y="306" width="178" height="50" rx="8" stroke="#a5b4fc"/>
+    <text class="box-title" x="608" y="331">StreamSession 2</text>
+    <text class="box-text" x="608" y="347">可选视频流</text>
+
+    <rect class="pill" x="856" y="248" width="162" height="50" rx="8" stroke="#a5b4fc"/>
+    <text class="box-title" x="891" y="273">FaceAnalyzer</text>
+    <text class="box-text" x="891" y="289">抽帧提交 AI</text>
+
+    <rect class="pill" x="856" y="306" width="162" height="50" rx="8" stroke="#a5b4fc"/>
+    <text class="box-title" x="891" y="331">SyncController</text>
+    <text class="box-text" x="891" y="347">音视频时钟同步</text>
+  </g>
+
+  <path class="arrow" d="M825 172 V202 H179 V266"/>
+  <path class="arrow" d="M262 291 H312 V273 H334"/>
+  <path class="arrow" d="M262 291 H312 V331 H334"/>
+  <path class="arrow" d="M500 273 H574"/>
+  <path class="arrow" d="M500 331 H574"/>
+  <path class="arrow-overlay" d="M752 273 H856"/>
+  <path class="arrow" d="M752 331 H856"/>
+
+  <g filter="url(#shadow)">
+    <rect class="pill" x="96" y="420" width="162" height="54" rx="8" stroke="#86efac"/>
+    <text class="box-title" x="133" y="445">RtspClient</text>
+    <text class="box-text" x="133" y="462">连接 / 收包</text>
+
+    <rect class="pill" x="318" y="420" width="164" height="54" rx="8" stroke="#86efac"/>
+    <text class="box-title" x="364" y="445">FFmpeg</text>
+    <text class="box-text" x="346" y="462">demux / packet</text>
+
+    <rect class="pill" x="544" y="390" width="178" height="54" rx="8" stroke="#86efac"/>
+    <text class="box-title" x="585" y="415">视频解码</text>
+    <text class="box-text" x="575" y="432">CPU / HW frame</text>
+
+    <rect class="pill" x="544" y="456" width="178" height="54" rx="8" stroke="#86efac"/>
+    <text class="box-title" x="576" y="481">音频解码</text>
+    <text class="box-text" x="575" y="498">RtspAudioDecoder</text>
+
+    <rect class="pill" x="786" y="390" width="184" height="54" rx="8" stroke="#86efac"/>
+    <text class="box-title" x="813" y="415">硬解上下文</text>
+    <text class="box-text" x="810" y="432">CUDA / D3D / DXVA</text>
+
+    <rect class="pill" x="786" y="456" width="184" height="54" rx="8" stroke="#86efac"/>
+    <text class="box-title" x="815" y="481">NV12 转换</text>
+    <text class="box-text" x="812" y="498">Nv12FrameConverter</text>
+
+    <rect class="pill" x="1034" y="390" width="150" height="54" rx="8" stroke="#86efac"/>
+    <text class="box-title" x="1073" y="415">录制</text>
+    <text class="box-text" x="1059" y="432">RtspRecorder</text>
+  </g>
+
+  <path class="arrow" d="M663 356 V374 H177 V420"/>
+  <path class="arrow" d="M258 447 H318"/>
+  <path class="arrow-video" d="M482 447 H514 V417 H544"/>
+  <path class="arrow-audio" d="M482 447 H514 V483 H544"/>
+  <path class="arrow" d="M722 417 H786"/>
+  <path class="arrow-video" d="M722 417 H754 V483 H786"/>
+  <path class="arrow-record" d="M722 417 H1034"/>
+
+  <g filter="url(#shadow)">
+    <rect class="pill" x="96" y="596" width="166" height="54" rx="8" stroke="#fdba74"/>
+    <text class="box-title" x="135" y="621">JitterBuffer</text>
+    <text class="box-text" x="123" y="638">视频帧缓冲</text>
+
+    <rect class="pill" x="318" y="596" width="166" height="54" rx="8" stroke="#fdba74"/>
+    <text class="box-title" x="357" y="621">AudioPlayer</text>
+    <text class="box-text" x="348" y="638">SDL 音频时钟</text>
+
+    <rect class="pill" x="544" y="596" width="170" height="54" rx="8" stroke="#fdba74"/>
+    <text class="box-title" x="584" y="621">AI Overlay</text>
+    <text class="box-text" x="572" y="638">SCRFD 检测框</text>
+
+    <rect class="pill" x="776" y="596" width="178" height="54" rx="8" stroke="#fdba74"/>
+    <text class="box-title" x="809" y="621">VideoRenderer</text>
+    <text class="box-text" x="803" y="638">SDL / GL / Vulkan</text>
+
+    <rect class="pill" x="1016" y="596" width="168" height="54" rx="8" stroke="#fdba74"/>
+    <text class="box-title" x="1057" y="621">输出文件</text>
+    <text class="box-text" x="1039" y="638">captures / MP4</text>
+  </g>
+
+  <path class="arrow-video" d="M878 510 V534 H179 V596"/>
+  <path class="arrow-audio" d="M633 510 V534 H401 V596"/>
+  <path class="arrow-overlay" d="M937 298 V534 H629 V596"/>
+  <path class="arrow" d="M262 623 H318"/>
+  <path class="arrow" d="M484 623 H544"/>
+  <path class="arrow-video" d="M714 623 H776"/>
+  <path class="arrow" d="M954 623 H1016"/>
+  <path class="arrow-record" d="M1109 444 V596"/>
+
+  <rect x="58" y="696" width="1164" height="38" rx="8" fill="#ffffff" stroke="#d6dee9"/>
+  <circle cx="82" cy="715" r="5" fill="#2f6fed"/>
+  <text class="note" x="96" y="720">蓝色：视频帧路径</text>
+  <circle cx="236" cy="715" r="5" fill="#18a67a"/>
+  <text class="note" x="250" y="720">绿色：音频路径</text>
+  <circle cx="390" cy="715" r="5" fill="#b7791f"/>
+  <text class="note" x="404" y="720">虚线：AI overlay</text>
+  <circle cx="560" cy="715" r="5" fill="#c2410c"/>
+  <text class="note" x="574" y="720">橙色：录制输出</text>
+  <text class="note" x="790" y="720">核心原则：RtspClient 保持收包主流程，音频、硬解、帧转换和录制拆成独立职责模块。</text>
+</svg>
