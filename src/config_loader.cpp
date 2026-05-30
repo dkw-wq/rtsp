@@ -32,6 +32,21 @@ void assignNonNegativeInt(const YAML::Node& node, const char* key, int& target) 
     }
 }
 
+bool parseBooleanSwitchValue(const std::string& value, bool& target) {
+    const std::string normalized = toLower(value);
+    if (normalized == "1" || normalized == "true" || normalized == "yes" ||
+        normalized == "on" || normalized == "enabled") {
+        target = true;
+        return true;
+    }
+    if (normalized == "0" || normalized == "false" || normalized == "no" ||
+        normalized == "off" || normalized == "disabled") {
+        target = false;
+        return true;
+    }
+    return false;
+}
+
 } // namespace
 
 std::string toLower(std::string value) {
@@ -263,6 +278,16 @@ AppConfig loadAppConfig(const std::string& path) {
                 }
             }
         }
+        if (root["multi_stream"]) {
+            const auto multiStreamConfig = root["multi_stream"];
+            if (multiStreamConfig["max_streams"]) {
+                const int configuredMaxStreams =
+                    multiStreamConfig["max_streams"].as<int>();
+                if (configuredMaxStreams > 0) {
+                    config.maxStreams = static_cast<size_t>(configuredMaxStreams);
+                }
+            }
+        }
     } catch (const std::exception& e) {
         config.warning = e.what();
     }
@@ -271,16 +296,50 @@ AppConfig loadAppConfig(const std::string& path) {
 }
 
 void applyCommandLineOverrides(AppConfig& config, int argc, char* argv[]) {
-    if (argc > 2) {
-        config.rtspUrls = {argv[1], argv[2]};
-        config.rtspUrl = config.rtspUrls.front();
-    } else if (argc > 1) {
-        config.rtspUrl = argv[1];
-        if (config.rtspUrlsConfigured && !config.rtspUrls.empty()) {
-            config.rtspUrls[0] = config.rtspUrl;
-        } else {
-            config.rtspUrls = {config.rtspUrl};
+    std::vector<std::string> urls;
+    urls.reserve(argc > 1 ? static_cast<size_t>(argc - 1) : 0);
+
+    for (int index = 1; index < argc; ++index) {
+        const std::string argument = argv[index];
+        constexpr const char* faceDetectionPrefix = "--face-detection=";
+        constexpr size_t faceDetectionPrefixLength = 17;
+
+        if (argument == "--no-face-detection" ||
+            argument == "--disable-face-detection") {
+            config.faceDetectionOptions.enabled = false;
+            continue;
         }
+        if (argument == "--enable-face-detection") {
+            config.faceDetectionOptions.enabled = true;
+            continue;
+        }
+        if (argument == "--face-detection") {
+            if (index + 1 < argc) {
+                bool enabled = config.faceDetectionOptions.enabled;
+                if (parseBooleanSwitchValue(argv[index + 1], enabled)) {
+                    config.faceDetectionOptions.enabled = enabled;
+                    ++index;
+                    continue;
+                }
+            }
+            continue;
+        }
+        if (argument.rfind(faceDetectionPrefix, 0) == 0) {
+            bool enabled = config.faceDetectionOptions.enabled;
+            if (parseBooleanSwitchValue(
+                    argument.substr(faceDetectionPrefixLength),
+                    enabled)) {
+                config.faceDetectionOptions.enabled = enabled;
+            }
+            continue;
+        }
+
+        urls.push_back(argument);
+    }
+
+    if (!urls.empty()) {
+        config.rtspUrls = std::move(urls);
+        config.rtspUrl = config.rtspUrls.front();
     }
 
     if (config.rtspUrls.empty()) {

@@ -143,6 +143,8 @@ void testConfigLoaderParsesYaml() {
              << "  enabled: false\n"
              << "  initial_delay_ms: 20\n"
              << "  max_delay_ms: 80\n"
+             << "multi_stream:\n"
+             << "  max_streams: 16\n"
              << "opengl_filters:\n"
              << "  - warm\n"
              << "  - contrast\n";
@@ -185,6 +187,7 @@ void testConfigLoaderParsesYaml() {
             "face NMS threshold should be parsed");
     require(!config.reconnectOptions.enabled, "reconnect enabled should be parsed");
     require(config.reconnectOptions.maxDelayMs == 80, "reconnect max delay should be parsed");
+    require(config.maxStreams == 16, "multi-stream limit should be parsed");
     require(config.openglFilterNames.size() == 2, "OpenGL filters should be parsed");
 }
 
@@ -199,11 +202,11 @@ void testCommandLineOverrideSingleUrl() {
     rtsp::applyCommandLineOverrides(config, 2, argv);
 
     require(config.rtspUrl == "rtsp://override/one", "single command URL should override primary URL");
-    require(config.rtspUrls.size() == 2, "single command URL should preserve configured stream count");
-    require(config.rtspUrls[0] == "rtsp://override/one", "single command URL should replace first stream");
+    require(config.rtspUrls.size() == 1, "single command URL should replace configured stream list");
+    require(config.rtspUrls[0] == "rtsp://override/one", "single command URL should become stream 1");
 }
 
-void testCommandLineOverrideTwoUrls() {
+void testCommandLineOverrideMultipleUrls() {
     rtsp::AppConfig config;
     config.rtspUrl = "rtsp://configured/main";
     config.rtspUrls = {"rtsp://configured/a"};
@@ -212,13 +215,40 @@ void testCommandLineOverrideTwoUrls() {
     char program[] = "rtsp_player";
     char firstUrl[] = "rtsp://override/one";
     char secondUrl[] = "rtsp://override/two";
-    char* argv[] = {program, firstUrl, secondUrl};
-    rtsp::applyCommandLineOverrides(config, 3, argv);
+    char thirdUrl[] = "rtsp://override/three";
+    char* argv[] = {program, firstUrl, secondUrl, thirdUrl};
+    rtsp::applyCommandLineOverrides(config, 4, argv);
 
-    require(config.rtspUrl == "rtsp://override/one", "two command URLs should set primary URL");
-    require(config.rtspUrls.size() == 2, "two command URLs should replace configured streams");
+    require(config.rtspUrl == "rtsp://override/one", "command URLs should set primary URL");
+    require(config.rtspUrls.size() == 3, "all command URLs should replace configured streams");
     require(config.rtspUrls[0] == "rtsp://override/one", "first command URL should become stream 1");
     require(config.rtspUrls[1] == "rtsp://override/two", "second command URL should become stream 2");
+    require(config.rtspUrls[2] == "rtsp://override/three", "third command URL should become stream 3");
+}
+
+void testCommandLineOverrideFaceDetection() {
+    rtsp::AppConfig config;
+    config.faceDetectionOptions.enabled = true;
+
+    char program[] = "rtsp_player";
+    char faceDetectionOption[] = "--face-detection=off";
+    char firstUrl[] = "rtsp://override/one";
+    char secondUrl[] = "rtsp://override/two";
+    char* argv[] = {program, faceDetectionOption, firstUrl, secondUrl};
+    rtsp::applyCommandLineOverrides(config, 4, argv);
+
+    require(!config.faceDetectionOptions.enabled,
+            "command line should disable face detection globally");
+    require(config.rtspUrls.size() == 2,
+            "face detection option should not be treated as a stream URL");
+    require(config.rtspUrls[0] == "rtsp://override/one", "first URL should remain stream 1");
+    require(config.rtspUrls[1] == "rtsp://override/two", "second URL should remain stream 2");
+
+    char enableFaceDetectionOption[] = "--enable-face-detection";
+    char* enableArgv[] = {program, enableFaceDetectionOption};
+    rtsp::applyCommandLineOverrides(config, 2, enableArgv);
+    require(config.faceDetectionOptions.enabled,
+            "command line should enable face detection globally");
 }
 
 void testConfigLoaderKeepsDefaultsForInvalidValues() {
@@ -450,7 +480,9 @@ int main() {
         runTest("JitterBuffer holds non-key frame until latency", testJitterBufferHoldsUntilLatency);
         runTest("ConfigLoader parses YAML", testConfigLoaderParsesYaml);
         runTest("ConfigLoader applies single URL override", testCommandLineOverrideSingleUrl);
-        runTest("ConfigLoader applies two URL override", testCommandLineOverrideTwoUrls);
+        runTest("ConfigLoader applies multiple URL override", testCommandLineOverrideMultipleUrls);
+        runTest("ConfigLoader applies face detection override",
+                testCommandLineOverrideFaceDetection);
         runTest("ConfigLoader keeps defaults for invalid values",
                 testConfigLoaderKeepsDefaultsForInvalidValues);
         runTest("ConfigLoader reports malformed YAML", testConfigLoaderReportsMalformedYaml);

@@ -74,6 +74,7 @@ std::filesystem::path initializeLogging() {
 void logConfig(const AppConfig& config) {
     SPDLOG_INFO("RTSP URL: {}", config.rtspUrl);
     SPDLOG_INFO("RTSP stream count: {}", config.rtspUrls.size());
+    SPDLOG_INFO("RTSP max streams: {}", config.maxStreams);
     SPDLOG_INFO("Renderer backend: {}", config.rendererName);
     SPDLOG_INFO("Hardware decode: {}", config.hwDecodeBackend);
     SPDLOG_INFO("RTSP options: transport={}, timeout_ms={}, buffer_size={}, low_latency={}",

@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <utility>
 
 #include <spdlog/spdlog.h>
 
@@ -17,6 +18,20 @@
 #endif
 
 namespace rtsp::rendering::vulkan {
+
+namespace {
+
+std::pair<uint32_t, uint32_t> gridForSlots(uint32_t slotCount) {
+    const uint32_t clampedSlotCount = std::max<uint32_t>(slotCount, 1U);
+    uint32_t columns = 1;
+    while (columns * columns < clampedSlotCount) {
+        ++columns;
+    }
+    const uint32_t rows = (clampedSlotCount + columns - 1U) / columns;
+    return {columns, rows};
+}
+
+} // namespace
 
 bool VulkanVideoRenderer::captureNeeded() const {
     return swapchainTransferSrcSupported_ &&
@@ -132,10 +147,15 @@ VkViewport VulkanVideoRenderer::videoViewportFor(int videoWidth,
                                                  uint32_t slotCount) const {
     const float surfaceWidth = static_cast<float>(swapchainExtent_.width);
     const float surfaceHeight = static_cast<float>(swapchainExtent_.height);
-    const uint32_t columns = std::max<uint32_t>(slotCount, 1U);
+    const uint32_t clampedSlotCount = std::max<uint32_t>(slotCount, 1U);
+    const auto [columns, rows] = gridForSlots(clampedSlotCount);
     const float panelWidth = surfaceWidth / static_cast<float>(columns);
-    const float panelHeight = surfaceHeight;
-    const float panelX = panelWidth * static_cast<float>(std::min(slotIndex, columns - 1U));
+    const float panelHeight = surfaceHeight / static_cast<float>(rows);
+    const uint32_t safeSlot = std::min<uint32_t>(slotIndex, clampedSlotCount - 1U);
+    const uint32_t column = safeSlot % columns;
+    const uint32_t row = safeSlot / columns;
+    const float panelX = panelWidth * static_cast<float>(column);
+    const float panelY = panelHeight * static_cast<float>(row);
 
     const float videoAspect = static_cast<float>(videoWidth) / static_cast<float>(videoHeight);
     const float panelAspect = panelWidth / panelHeight;
@@ -143,14 +163,14 @@ VkViewport VulkanVideoRenderer::videoViewportFor(int videoWidth,
     float viewportWidth = panelWidth;
     float viewportHeight = panelHeight;
     float viewportX = panelX;
-    float viewportY = 0.0f;
+    float viewportY = panelY;
 
     if (panelAspect > videoAspect) {
         viewportWidth = panelHeight * videoAspect;
         viewportX = panelX + (panelWidth - viewportWidth) * 0.5f;
     } else {
         viewportHeight = panelWidth / videoAspect;
-        viewportY = (panelHeight - viewportHeight) * 0.5f;
+        viewportY = panelY + (panelHeight - viewportHeight) * 0.5f;
     }
 
     VkViewport viewport{};

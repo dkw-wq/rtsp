@@ -3,17 +3,34 @@
 # RTSP流地址
 rtsp_url: "rtsp://127.0.0.1:8554/webcam"
 
-# 双路显示时使用前两个地址；启用后会优先于 rtsp_url。
+# 多路显示时使用这些地址；启用后会优先于 rtsp_url。
 rtsp_urls:
   - "rtsp://127.0.0.1:8554/webcam"
-  - "rtsp://127.0.0.1:8554/webcam2"
+  - "rtsp://127.0.0.1:8554/sample"
+  - "rtsp://127.0.0.1:8554/sample"
+  - "rtsp://127.0.0.1:8554/sample"
+  - "rtsp://127.0.0.1:8554/sample"
+  - "rtsp://127.0.0.1:8554/sample"
+  - "rtsp://127.0.0.1:8554/sample"
+  - "rtsp://127.0.0.1:8554/sample"
+  - "rtsp://127.0.0.1:8554/sample"
+  - "rtsp://127.0.0.1:8554/sample"
+  - "rtsp://127.0.0.1:8554/sample"
+  - "rtsp://127.0.0.1:8554/sample"
+  - "rtsp://127.0.0.1:8554/sample"
+  - "rtsp://127.0.0.1:8554/sample"
+  - "rtsp://127.0.0.1:8554/sample"
+  - "rtsp://127.0.0.1:8554/sample"
+
+multi_stream:
+  max_streams: 16
 
 # 双路显示时音频单独走一路 RTSP，避免拖慢第一路视频。
-audio_rtsp_url: "rtsp://127.0.0.1:8554/audio"
+audio_rtsp_url: ""
 
-# 视频参数 (通常由RTSP流自动检测，这里仅作默认值)
-width: 1920
-height: 1080
+# 窗口尺寸；多路网格会整体适配到这个窗口内。
+width: 1280
+height: 720
 
 # RTSP连接参数
 rtsp:
@@ -38,14 +55,14 @@ jitter_buffer:
 
 # 音频播放设置
 audio:
-  enabled: true
+  enabled: false
   target_latency_ms: 50
   max_queue_ms: 1000
   hard_reset_queue_ms: 1500
 
 # 音视频同步设置：以音频时钟为主时钟
 sync:
-  enabled: true   # AI不要改，只手工改
+  enabled: false   # AI不要改，只手工改
   max_wait_ms: 16
   late_drop_ms: 250
   # 双路三 RTSP 模式下的手动音频偏移；正数让视频相对音频晚显示，负数让视频早显示。

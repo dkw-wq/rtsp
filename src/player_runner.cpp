@@ -175,7 +175,8 @@ void finishReconnects(std::vector<std::unique_ptr<rtsp::StreamSession>>& streams
 int runSingleStreamImpl(const rtsp::AppConfig& config);
 
 int runMultiStreamImpl(const rtsp::AppConfig& config) {
-    const size_t streamCount = std::min<size_t>(config.rtspUrls.size(), 2);
+    const size_t streamCount =
+        std::min<size_t>(config.rtspUrls.size(), std::max<size_t>(config.maxStreams, 1));
     const std::string rendererBackend = rtsp::toLower(config.rendererName);
     const bool usesOpenGlRenderer = rendererBackend == "opengl" || rendererBackend == "gl";
     const bool usesVulkanRenderer = rendererBackend == "vulkan" || rendererBackend == "vk";
@@ -293,40 +294,12 @@ int runMultiStreamImpl(const rtsp::AppConfig& config) {
     }
 
     auto rendererSizeForSlots = [&](size_t slotCount) {
-        int baseWidth = 0;
-        int baseHeight = 0;
-        for (size_t index = 0; index < streams.size(); ++index) {
-            if (!streamRuntimes[index].online) {
-                continue;
-            }
-
-            const auto& stream = streams[index];
-            int streamWidth = stream->latestFrame ? stream->latestFrame->width
-                                                  : stream->client().getWidth();
-            int streamHeight = stream->latestFrame ? stream->latestFrame->height
-                                                   : stream->client().getHeight();
-            if (streamWidth <= 0) {
-                streamWidth = config.width;
-            }
-            if (streamHeight <= 0) {
-                streamHeight = config.height;
-            }
-
-            baseWidth = std::max(baseWidth, streamWidth);
-            baseHeight = std::max(baseHeight, streamHeight);
-        }
-
-        if (baseWidth <= 0) {
-            baseWidth = config.width;
-        }
-        if (baseHeight <= 0) {
-            baseHeight = config.height;
-        }
-
-        const size_t clampedSlots = std::max<size_t>(std::min<size_t>(slotCount, 2), 1);
+        (void)slotCount;
+        const int configuredWidth = config.width > 0 ? config.width : 1280;
+        const int configuredHeight = config.height > 0 ? config.height : 720;
         return std::make_pair(
-            std::clamp(baseWidth * static_cast<int>(clampedSlots), 640, 1920),
-            std::clamp(baseHeight, 360, 1080));
+            std::clamp(configuredWidth, 640, 2560),
+            std::clamp(configuredHeight, 360, 1440));
     };
 
     size_t rendererSlotCount = std::max<size_t>(onlineStreamCount, 1);
@@ -337,10 +310,10 @@ int runMultiStreamImpl(const rtsp::AppConfig& config) {
     }
 
     auto rebuildRendererForSlots = [&](size_t slotCount, const char* reason) {
-        const size_t clampedSlots = std::max<size_t>(std::min<size_t>(slotCount, 2), 1);
+        const size_t clampedSlots = std::max<size_t>(slotCount, 1);
         const auto [layoutWidth, layoutHeight] = rendererSizeForSlots(clampedSlots);
         const std::string title =
-            clampedSlots > 1 ? "RTSP Player - Dual View" : "RTSP Player";
+            clampedSlots > 1 ? "RTSP Player - Multi View" : "RTSP Player";
 
         SPDLOG_WARN("Rebuilding renderer for {} active stream(s): {}",
                     clampedSlots,

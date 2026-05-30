@@ -153,7 +153,7 @@ bool OpenGlVideoRenderer::render(const std::vector<std::shared_ptr<MediaFrame>>&
         return false;
     }
 
-    const size_t slotCount = std::min<size_t>(frames.size(), 2);
+    const size_t slotCount = frames.size();
     bool renderedAny = false;
 
     glClear(GL_COLOR_BUFFER_BIT);

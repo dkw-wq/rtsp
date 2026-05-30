@@ -12,6 +12,7 @@ $pidFiles = @(
     (Join-Path $logDir "ffmpeg-webcam2.pid"),
     (Join-Path $logDir "ffmpeg-webcam2-watcher.pid"),
     (Join-Path $logDir "ffmpeg-audio.pid"),
+    (Join-Path $logDir "ffmpeg-sample-file.pid"),
     (Join-Path $logDir "mediamtx.pid")
 )
 
@@ -41,6 +42,7 @@ $ffmpegProcesses = Get-CimInstance Win32_Process -Filter "name = 'ffmpeg.exe'" -
     Where-Object {
         $_.CommandLine -like "*$RtspUrl*" -or
         $_.CommandLine -like "*rtsp://127.0.0.1:8554/webcam2*" -or
+        $_.CommandLine -like "*rtsp://127.0.0.1:8554/sample*" -or
         $_.CommandLine -like "*rtsp://127.0.0.1:8554/audio*"
     }
 
@@ -51,9 +53,11 @@ foreach ($process in $ffmpegProcesses) {
 
 $watchdogProcesses = Get-CimInstance Win32_Process -Filter "name = 'powershell.exe'" -ErrorAction SilentlyContinue |
     Where-Object {
-        $_.CommandLine -like "*watch_webcam_publisher.ps1*" -and (
+        ($_.CommandLine -like "*watch_webcam_publisher.ps1*" -or
+            $_.CommandLine -like "*watch_file_publisher.ps1*") -and (
             $_.CommandLine -like "*$RtspUrl*" -or
             $_.CommandLine -like "*rtsp://127.0.0.1:8554/webcam2*" -or
+            $_.CommandLine -like "*rtsp://127.0.0.1:8554/sample*" -or
             $_.CommandLine -like "*rtsp://127.0.0.1:8554/audio*"
         )
     }

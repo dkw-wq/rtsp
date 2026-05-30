@@ -1,6 +1,6 @@
 # RTSP Player
 
-Windows RTSP 播放器，基于 FFmpeg 解码，支持 SDL/OpenGL/Vulkan 渲染、音频播放、音视频同步、断线重连、截图录制、双路分屏和 SCRFD ONNX 人脸检测 overlay。
+Windows RTSP 播放器，基于 FFmpeg 解码，支持 SDL/OpenGL/Vulkan 渲染、音频播放、音视频同步、断线重连、截图录制、多路网格显示和 SCRFD ONNX 人脸检测 overlay。
 
 ## 功能特性
 
@@ -10,7 +10,7 @@ Windows RTSP 播放器，基于 FFmpeg 解码，支持 SDL/OpenGL/Vulkan 渲染�
 - 可选 NVIDIA NVDEC/CUDA 硬解，失败时回退到 d3d11va/dxva2 或软件解码。
 - 音频解码、48 kHz stereo S16 重采样和 SDL 播放。
 - 以音频时钟为主的音视频同步、jitter buffer 和晚帧丢弃。
-- 双路 RTSP 左右分屏，第二路断开后自动隐藏并后台重连。
+- 多路 RTSP 网格显示，单路断开后自动隐藏并后台重连。
 - 截图、录制、运行时滤镜切换。
 - SCRFD ONNX 人脸检测，支持 ONNX Runtime CPU/CUDA provider。
 - 本机摄像头 MediaMTX + FFmpeg 推流辅助脚本。
@@ -21,7 +21,7 @@ Windows RTSP 播放器，基于 FFmpeg 解码，支持 SDL/OpenGL/Vulkan 渲染�
 
 核心边界：
 
-- `PlayerRunner` 负责单路/双路播放主循环、重连、同步等待和渲染调度。
+- `PlayerRunner` 负责单路/多路播放主循环、重连、同步等待和渲染调度。
 - `StreamSession` 封装单路流状态，把 `RtspClient` 输出的视频帧推入 `JitterBuffer`，把音频帧转给 `AudioPlayer`。
 - `RtspClient` 负责 RTSP 连接和收包主循环；音频解码、硬解上下文、NV12 转换和录制分别由独立模块承载。
 - `VideoRenderer` 是渲染后端接口，SDL/OpenGL/Vulkan 共享播放状态和 overlay 输入。
@@ -106,13 +106,20 @@ Hardware decode active: cuda
 .\build-vcpkg\bin\Release\rtsp_player.exe rtsp://你的摄像头IP:554/你的路径
 ```
 
-启动时传入双路 RTSP 地址：
+启动时传入多路 RTSP 地址：
 
 ```powershell
-.\build-vcpkg\bin\Release\rtsp_player.exe rtsp://第一个摄像头IP:554/你的路径 rtsp://第二个摄像头IP:554/你的路径
+.\build-vcpkg\bin\Release\rtsp_player.exe rtsp://第一个摄像头IP:554/你的路径 rtsp://第二个摄像头IP:554/你的路径 rtsp://第三个摄像头IP:554/你的路径
 ```
 
-当前多路管理只使用前两个 RTSP 地址。第一路是主视频；第二路是可选视频，启动或运行中不可用时会临时隐藏，并按退避策略后台重连，恢复后自动回到分屏。
+命令行会读取所有传入的 RTSP URL。实际启用路数由 `multi_stream.max_streams` 限制。
+
+命令行全局覆盖人脸识别开关：
+
+```powershell
+.\build-vcpkg\bin\Release\rtsp_player.exe --face-detection off rtsp://127.0.0.1:8554/webcam rtsp://127.0.0.1:8554/sample
+.\build-vcpkg\bin\Release\rtsp_player.exe --face-detection on
+```
 
 ## 配置
 
@@ -169,16 +176,23 @@ jitter_buffer:
 
 低延迟场景可降低 `latency_ms`；弱网或抖动明显时建议把视频 jitter buffer 和 `audio.target_latency_ms` 一起调高，例如 `300` 或 `1000`。
 
-### 双路分屏
+### 多路网格
 
 ```yaml
 renderer: "vulkan"
+width: 1280
+height: 720
+multi_stream:
+  max_streams: 16
 rtsp_urls:
   - "rtsp://第一个摄像头IP:554/你的路径"
   - "rtsp://第二个摄像头IP:554/你的路径"
+  - "rtsp://第三个摄像头IP:554/你的路径"
 ```
 
-双路本机推流时，音频可以单独走一路 RTSP，避免拖慢第一路视频：
+`width` / `height` 是播放器窗口尺寸；多路网格会整体适配到这个窗口内。16 路预览建议先用 `1280x720` 或 `1600x900`，不要按每路源分辨率放大窗口。
+
+多路本机推流时，音频可以单独走一路 RTSP，避免拖慢第一路视频：
 
 ```yaml
 rtsp_urls:
@@ -223,6 +237,13 @@ face_detection:
 ```
 
 `onnx_cuda` 会先检查 ONNX Runtime 的 `CUDAExecutionProvider`。可用时使用 GPU 推理；不可用、初始化失败或缺少 provider DLL 时记录 warning 并自动回退到 `onnx_cpu`。
+
+多路播放时，人脸识别是全局开关，一次作用于所有路：
+
+```powershell
+.\build-vcpkg\bin\Release\rtsp_player.exe --face-detection off
+.\build-vcpkg\bin\Release\rtsp_player.exe --face-detection on
+```
 
 检查 ONNX Runtime CUDA provider：
 
@@ -277,6 +298,49 @@ Windows 下需要确保 `onnxruntime_providers_cuda.dll`、`onnxruntime_provider
 .\scripts\stop_webcam_rtsp.ps1
 ```
 
+## 16 路本机压测链路
+
+这条链路用于本机压测：第 1 路使用本机摄像头推到 `rtsp://127.0.0.1:8554/webcam`，第 2-16 路复用同一个 MP4 循环推出来的 `rtsp://127.0.0.1:8554/sample`。默认 MP4 路径是 `captures\recording_20260507_155110_304.mp4`。
+
+1. 构建播放器：
+
+```powershell
+cmake --build --preset windows-vcpkg-release --target rtsp_player
+```
+
+1. 启动 MediaMTX、摄像头推流、MP4 循环推流，并直接启动播放器：
+
+```powershell
+.\scripts\start_16_streams.ps1 -StartPlayer -FaceDetection off
+```
+
+1. 如果只启动 RTSP 源，不启动播放器：
+
+```powershell
+.\scripts\start_16_streams.ps1 -FaceDetection off
+.\build-vcpkg\bin\Release\rtsp_player.exe --face-detection off
+```
+
+1. 开启人脸识别进行全路测试：
+
+```powershell
+.\scripts\start_16_streams.ps1 -StartPlayer -FaceDetection on
+```
+
+1. 停止整条链路：
+
+```powershell
+Get-Process rtsp_player -ErrorAction SilentlyContinue | Stop-Process -Force
+.\scripts\stop_webcam_rtsp.ps1
+```
+
+可选参数：
+
+- `-StreamCount 16`：设置总路数，第 1 路是摄像头，其余路复用 MP4 RTSP。
+- `-FaceDetection off|on|config`：启动播放器时覆盖人脸识别开关；`config` 表示使用 `config/config.yaml`。
+- `-Mp4Path "C:\path\to\video.mp4"`：指定用于重复推流的 MP4。
+- `-TranscodeFile`：MP4 无法 `-c:v copy` 推流时才启用转码，CPU 消耗更高。
+
 ## 快捷键
 
 | 按键 | 功能 |
@@ -311,7 +375,7 @@ cmake --build build-vcpkg --config Release --target onnx_cuda_probe
 主要代码结构：
 
 - `src/rtsp_client.cpp`：RTSP 输入、FFmpeg 解复用、音视频解码、硬解回退和录制。
-- `src/player_runner.cpp`：单路/双路播放主循环、同步、重连和渲染调度。
+- `src/player_runner.cpp`：单路/多路播放主循环、同步、重连和渲染调度。
 - `src/rendering/`：SDL、OpenGL、Vulkan 渲染后端。
 - `src/onnx_scrfd_detector.cpp`：SCRFD ONNX 推理与后处理。
 - `tests/unit_tests.cpp`：配置、jitter buffer 和同步逻辑测试。
@@ -322,8 +386,7 @@ cmake --build build-vcpkg --config Release --target onnx_cuda_probe
 ```powershell
 
 cmake --preset windows-vcpkg
-.\scripts\start_webcam_rtsp.ps1 -Dual
-.\build-vcpkg\bin\Release\rtsp_player.exe
+.\scripts\start_16_streams.ps1 -StartPlayer -FaceDetection off
 .\scripts\stop_webcam_rtsp.ps1
 
 ```
