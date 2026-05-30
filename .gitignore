@@ -4,3 +4,4 @@ captures/
 logs/
 CMakeUserPresets.json
 vcpkg_installed/
+tools/build_rtsp_interview_doc.py
