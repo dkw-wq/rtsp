@@ -5,7 +5,7 @@ param(
     [string]$Mp4Path = "C:\Users\dkw\.a_dkwrtc\rtsp\captures\recording_20260507_155110_304.mp4",
     [string]$VideoSize = "1280x720",
     [int]$Framerate = 30,
-    [int]$StreamCount = 16,
+    [int]$StreamCount = 40,
     [ValidateSet("on", "off", "config")][string]$FaceDetection = "off",
     [switch]$TranscodeFile,
     [switch]$FfmpegDebug,

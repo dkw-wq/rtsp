@@ -183,14 +183,14 @@ renderer: "vulkan"
 width: 1280
 height: 720
 multi_stream:
-  max_streams: 16
+  max_streams: 40
 rtsp_urls:
   - "rtsp://第一个摄像头IP:554/你的路径"
   - "rtsp://第二个摄像头IP:554/你的路径"
   - "rtsp://第三个摄像头IP:554/你的路径"
 ```
 
-`width` / `height` 是播放器窗口尺寸；多路网格会整体适配到这个窗口内。16 路预览建议先用 `1280x720` 或 `1600x900`，不要按每路源分辨率放大窗口。
+`width` / `height` 是播放器窗口尺寸；多路网格会整体适配到这个窗口内。40 路预览建议先用 `1280x720` 或 `1600x900`，不要按每路源分辨率放大窗口。
 
 多路本机推流时，音频可以单独走一路 RTSP，避免拖慢第一路视频：
 
@@ -298,9 +298,9 @@ Windows 下需要确保 `onnxruntime_providers_cuda.dll`、`onnxruntime_provider
 .\scripts\stop_webcam_rtsp.ps1
 ```
 
-## 16 路本机压测链路
+## 40 路本机压测链路
 
-这条链路用于本机压测：第 1 路使用本机摄像头推到 `rtsp://127.0.0.1:8554/webcam`，第 2-16 路复用同一个 MP4 循环推出来的 `rtsp://127.0.0.1:8554/sample`。默认 MP4 路径是 `captures\recording_20260507_155110_304.mp4`。
+这条链路用于本机压测：第 1 路使用本机摄像头推到 `rtsp://127.0.0.1:8554/webcam`，第 2-40 路复用同一个 MP4 循环推出来的 `rtsp://127.0.0.1:8554/sample`。默认 MP4 路径是 `captures\recording_20260507_155110_304.mp4`。
 
 1. 构建播放器：
 
@@ -336,7 +336,7 @@ Get-Process rtsp_player -ErrorAction SilentlyContinue | Stop-Process -Force
 
 可选参数：
 
-- `-StreamCount 16`：设置总路数，第 1 路是摄像头，其余路复用 MP4 RTSP。
+- `-StreamCount 40`：设置总路数，第 1 路是摄像头，其余路复用 MP4 RTSP。
 - `-FaceDetection off|on|config`：启动播放器时覆盖人脸识别开关；`config` 表示使用 `config/config.yaml`。
 - `-Mp4Path "C:\path\to\video.mp4"`：指定用于重复推流的 MP4。
 - `-TranscodeFile`：MP4 无法 `-c:v copy` 推流时才启用转码，CPU 消耗更高。

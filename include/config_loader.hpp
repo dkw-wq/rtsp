@@ -37,7 +37,7 @@ struct AppConfig {
     size_t jitterMaxSize = 12;
     uint32_t jitterLatencyMs = 30;
     ReconnectOptions reconnectOptions;
-    size_t maxStreams = 16;
+    size_t maxStreams = 40;
     std::string warning;
     bool rtspUrlsConfigured = false;
 };

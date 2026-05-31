@@ -1,7 +1,7 @@
 # RTSP Player Configuration
 
 # RTSP流地址
-rtsp_url: "rtsp://192.168.238.140:8554/sample/stream_1"
+_disabled_rtsp_url: "rtsp://192.168.238.140:8554/sample/stream_1"
 
 # 多路显示时使用这些地址；启用后会优先于 rtsp_url。
 _disabled_rtsp_urls:
@@ -23,6 +23,7 @@ _disabled_rtsp_urls:
   - "rtsp://127.0.0.1:8554/sample"
 
 rtsp_urls:
+  - "rtsp://192.168.238.140:8554/sample/stream_1"
   - "rtsp://192.168.238.140:8554/sample/stream_2"
   - "rtsp://192.168.238.140:8554/sample/stream_3"
   - "rtsp://192.168.238.140:8554/sample/stream_4"
@@ -38,9 +39,33 @@ rtsp_urls:
   - "rtsp://192.168.238.140:8554/sample/stream_14"
   - "rtsp://192.168.238.140:8554/sample/stream_15"
   - "rtsp://192.168.238.140:8554/sample/stream_16"
+  - "rtsp://192.168.238.140:8554/sample/stream_17"
+  - "rtsp://192.168.238.140:8554/sample/stream_18"
+  - "rtsp://192.168.238.140:8554/sample/stream_19"
+  - "rtsp://192.168.238.140:8554/sample/stream_20"
+  - "rtsp://192.168.238.140:8554/sample/stream_21"
+  - "rtsp://192.168.238.140:8554/sample/stream_22"
+  - "rtsp://192.168.238.140:8554/sample/stream_23"
+  - "rtsp://192.168.238.140:8554/sample/stream_24"
+  - "rtsp://192.168.238.140:8554/sample/stream_25"
+  - "rtsp://192.168.238.140:8554/sample/stream_26"
+  - "rtsp://192.168.238.140:8554/sample/stream_27"
+  - "rtsp://192.168.238.140:8554/sample/stream_28"
+  - "rtsp://192.168.238.140:8554/sample/stream_29"
+  - "rtsp://192.168.238.140:8554/sample/stream_30"
+  - "rtsp://192.168.238.140:8554/sample/stream_31"
+  - "rtsp://192.168.238.140:8554/sample/stream_32"
+  - "rtsp://192.168.238.140:8554/sample/stream_33"
+  - "rtsp://192.168.238.140:8554/sample/stream_34"
+  - "rtsp://192.168.238.140:8554/sample/stream_35"
+  - "rtsp://192.168.238.140:8554/sample/stream_36"
+  - "rtsp://192.168.238.140:8554/sample/stream_37"
+  - "rtsp://192.168.238.140:8554/sample/stream_38"
+  - "rtsp://192.168.238.140:8554/sample/stream_39"
+  - "rtsp://192.168.238.140:8554/sample/stream_40"
 
 multi_stream:
-  max_streams: 16
+  max_streams: 40
 
 # 双路显示时音频单独走一路 RTSP，避免拖慢第一路视频。
 audio_rtsp_url: ""

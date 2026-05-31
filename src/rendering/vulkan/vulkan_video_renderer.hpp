@@ -38,7 +38,7 @@ namespace rtsp::rendering::vulkan {
 
 constexpr int kWindowStartX = SDL_WINDOWPOS_CENTERED;
 constexpr int kWindowStartY = SDL_WINDOWPOS_CENTERED;
-constexpr size_t kMaxVideoSlots = 16;
+constexpr size_t kMaxVideoSlots = 40;
 
 extern const std::vector<const char*> kDeviceExtensions;
 

@@ -144,7 +144,7 @@ void testConfigLoaderParsesYaml() {
              << "  initial_delay_ms: 20\n"
              << "  max_delay_ms: 80\n"
              << "multi_stream:\n"
-             << "  max_streams: 16\n"
+             << "  max_streams: 40\n"
              << "opengl_filters:\n"
              << "  - warm\n"
              << "  - contrast\n";
@@ -187,7 +187,7 @@ void testConfigLoaderParsesYaml() {
             "face NMS threshold should be parsed");
     require(!config.reconnectOptions.enabled, "reconnect enabled should be parsed");
     require(config.reconnectOptions.maxDelayMs == 80, "reconnect max delay should be parsed");
-    require(config.maxStreams == 16, "multi-stream limit should be parsed");
+    require(config.maxStreams == 40, "multi-stream limit should be parsed");
     require(config.openglFilterNames.size() == 2, "OpenGL filters should be parsed");
 }
 
