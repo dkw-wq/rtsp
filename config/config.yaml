@@ -1,10 +1,10 @@
 # RTSP Player Configuration
 
 # RTSP流地址
-rtsp_url: "rtsp://127.0.0.1:8554/webcam"
+rtsp_url: "rtsp://192.168.238.140:8554/sample/stream_1"
 
 # 多路显示时使用这些地址；启用后会优先于 rtsp_url。
-rtsp_urls:
+_disabled_rtsp_urls:
   - "rtsp://127.0.0.1:8554/webcam"
   - "rtsp://127.0.0.1:8554/sample"
   - "rtsp://127.0.0.1:8554/sample"
@@ -21,6 +21,23 @@ rtsp_urls:
   - "rtsp://127.0.0.1:8554/sample"
   - "rtsp://127.0.0.1:8554/sample"
   - "rtsp://127.0.0.1:8554/sample"
+
+rtsp_urls:
+  - "rtsp://192.168.238.140:8554/sample/stream_2"
+  - "rtsp://192.168.238.140:8554/sample/stream_3"
+  - "rtsp://192.168.238.140:8554/sample/stream_4"
+  - "rtsp://192.168.238.140:8554/sample/stream_5"
+  - "rtsp://192.168.238.140:8554/sample/stream_6"
+  - "rtsp://192.168.238.140:8554/sample/stream_7"
+  - "rtsp://192.168.238.140:8554/sample/stream_8"
+  - "rtsp://192.168.238.140:8554/sample/stream_9"
+  - "rtsp://192.168.238.140:8554/sample/stream_10"
+  - "rtsp://192.168.238.140:8554/sample/stream_11"
+  - "rtsp://192.168.238.140:8554/sample/stream_12"
+  - "rtsp://192.168.238.140:8554/sample/stream_13"
+  - "rtsp://192.168.238.140:8554/sample/stream_14"
+  - "rtsp://192.168.238.140:8554/sample/stream_15"
+  - "rtsp://192.168.238.140:8554/sample/stream_16"
 
 multi_stream:
   max_streams: 16
