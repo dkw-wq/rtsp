@@ -215,6 +215,8 @@ int runMultiStreamImpl(const rtsp::AppConfig& config) {
 #endif
         options.jitterMaxSize = config.jitterMaxSize;
         options.jitterLatencyMs = config.jitterLatencyMs;
+        options.jitterAdaptive = config.jitterAdaptive;
+        options.jitterMaxLatencyMs = config.jitterMaxLatencyMs;
         options.streamIndex = index;
         streams.push_back(std::make_unique<rtsp::StreamSession>(options));
     }
@@ -233,6 +235,8 @@ int runMultiStreamImpl(const rtsp::AppConfig& config) {
         options.audioPlayer = audioPlayer.get();
         options.jitterMaxSize = config.jitterMaxSize;
         options.jitterLatencyMs = config.jitterLatencyMs;
+        options.jitterAdaptive = config.jitterAdaptive;
+        options.jitterMaxLatencyMs = config.jitterMaxLatencyMs;
         options.streamIndex = streamCount;
         audioStream = std::make_unique<rtsp::StreamSession>(options);
     }
@@ -377,7 +381,7 @@ int runMultiStreamImpl(const rtsp::AppConfig& config) {
             const bool syncOrderedPlayback =
                 index == 0 && config.syncOptions.enabled && audioPlayer->hasClock();
             if (!stream.pendingFrame &&
-                stream.jitterBuffer().pop(nextFrame, index == 0 ? 1 : 0)) {
+                stream.jitterBuffer().pop(nextFrame, index == 0 ? 8 : 0)) {
                 stream.pendingFrame = nextFrame;
                 stream.noteInputFrame();
                 if (!syncOrderedPlayback) {
@@ -449,6 +453,7 @@ int runMultiStreamImpl(const rtsp::AppConfig& config) {
                 const auto audioStats = audioPlayer->getStats();
                 stream.stats.audioActive = audioStats.active;
                 stream.stats.audioQueueMs = audioStats.queuedMs;
+                stream.stats.audioDroppedFrames = audioStats.droppedFrames;
             }
         }
 
@@ -572,6 +577,8 @@ int runSingleStreamImpl(const rtsp::AppConfig& config) {
     options.audioPlayer = audioPlayer.get();
     options.jitterMaxSize = config.jitterMaxSize;
     options.jitterLatencyMs = config.jitterLatencyMs;
+    options.jitterAdaptive = config.jitterAdaptive;
+    options.jitterMaxLatencyMs = config.jitterMaxLatencyMs;
     options.streamIndex = 0;
     auto stream = std::make_unique<rtsp::StreamSession>(options);
 
@@ -661,7 +668,7 @@ int runSingleStreamImpl(const rtsp::AppConfig& config) {
 
         if (!stream->pendingFrame) {
             std::shared_ptr<rtsp::MediaFrame> nextFrame;
-            if (stream->jitterBuffer().pop(nextFrame, 1)) {
+            if (stream->jitterBuffer().pop(nextFrame, 16)) {
                 stream->pendingFrame = nextFrame;
             }
         }
@@ -690,8 +697,8 @@ int runSingleStreamImpl(const rtsp::AppConfig& config) {
                 continue;
             }
 
-            stream->refreshStats();
             stream->stats.syncDroppedFrames = sync.droppedFrames();
+            stream->refreshStats();
             renderer->setPlaybackStats(stream->stats);
             faceAnalyzer->submitFrame(frame, 0);
             renderer->setFaceOverlays(faceAnalyzer->latestResults());

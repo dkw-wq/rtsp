@@ -204,6 +204,16 @@ AppConfig loadAppConfig(const std::string& path) {
                     config.jitterLatencyMs = static_cast<uint32_t>(configuredLatencyMs);
                 }
             }
+            if (jitterConfig["adaptive"]) {
+                config.jitterAdaptive = jitterConfig["adaptive"].as<bool>();
+            }
+            if (jitterConfig["max_latency_ms"]) {
+                const int configuredMaxLatencyMs = jitterConfig["max_latency_ms"].as<int>();
+                if (configuredMaxLatencyMs >= 0) {
+                    config.jitterMaxLatencyMs =
+                        static_cast<uint32_t>(configuredMaxLatencyMs);
+                }
+            }
         }
         if (root["audio"]) {
             const auto audioConfig = root["audio"];
@@ -292,6 +302,8 @@ AppConfig loadAppConfig(const std::string& path) {
         config.warning = e.what();
     }
 
+    config.jitterMaxLatencyMs =
+        std::max(config.jitterMaxLatencyMs, config.jitterLatencyMs);
     return config;
 }
 

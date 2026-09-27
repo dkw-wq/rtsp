@@ -13,7 +13,8 @@ StreamSession::StreamSession(StreamSessionOptions options)
     : options_(std::move(options))
     , client_(std::make_unique<RtspClient>())
     , jitterBuffer_(std::make_unique<JitterBuffer>(
-          options_.jitterMaxSize, options_.jitterLatencyMs)) {
+          options_.jitterMaxSize, options_.jitterLatencyMs,
+          options_.jitterAdaptive, options_.jitterMaxLatencyMs)) {
     client_->setConnectionOptions(options_.connectionOptions);
     client_->setAudioEnabled(options_.audioEnabled);
     client_->setVideoEnabled(options_.videoEnabled);
@@ -115,8 +116,12 @@ void StreamSession::refreshStats() {
     stats.decoderBackend = displayDecodeBackend(client_->getDecodeBackend());
     stats.hardwareDecodeStatus = client_->getHardwareDecodeStatus();
     stats.decodedFrames = jitterStats.totalFrames;
-    stats.droppedFrames = jitterStats.droppedFrames;
+    stats.bufferOverflowDrops = jitterStats.overflowDroppedFrames;
+    stats.lateArrivalDrops = jitterStats.lateDroppedFrames;
+    stats.droppedFrames = jitterStats.droppedFrames + stats.syncDroppedFrames;
     stats.jitterBufferSize = jitterStats.bufferSize;
+    stats.targetLatencyMs = jitterStats.targetLatencyMs;
+    stats.avgJitterMs = jitterStats.avgJitter;
     updateFrameLatency(latestFrame, stats);
 }
 

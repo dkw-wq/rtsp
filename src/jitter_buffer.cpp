@@ -1,16 +1,26 @@
 #include "jitter_buffer.hpp"
-#include <spdlog/spdlog.h>
+
+#include <algorithm>
+#include <cmath>
 
 namespace rtsp {
 
-JitterBuffer::JitterBuffer(size_t maxSize, uint32_t latencyMs)
-    : maxSize_(maxSize)
-    , latencyMs_(latencyMs)
-    , droppedFrames_(0)
+JitterBuffer::JitterBuffer(size_t maxSize, uint32_t latencyMs,
+                           bool adaptive, uint32_t maxLatencyMs)
+    : maxSize_(std::max<size_t>(maxSize, 1))
+    , baseLatencyMs_(latencyMs)
+    , targetLatencyMs_(latencyMs)
+    , maxLatencyMs_(std::max(latencyMs, maxLatencyMs))
+    , adaptive_(adaptive)
+    , overflowDroppedFrames_(0)
+    , lateDroppedFrames_(0)
     , totalFrames_(0)
-    , lastPts_(0)
-    , jitterSum_(0)
-    , jitterCount_(0)
+    , lastPtsSeconds_(0.0)
+    , lastReleasedPtsSeconds_(0.0)
+    , lastRecvTime_(0)
+    , jitterEstimateMs_(0.0)
+    , hasLastArrival_(false)
+    , hasLastRelease_(false)
 {}
 
 JitterBuffer::~JitterBuffer() = default;
@@ -27,78 +37,107 @@ bool JitterBuffer::push(const std::shared_ptr<MediaFrame>& frame) {
             std::chrono::steady_clock::now().time_since_epoch());
     }
 
-    // 如果缓冲区已满，丢弃最旧的帧
-    if (buffer_.size() >= maxSize_) {
-        buffer_.pop();
-        droppedFrames_++;
+    ++totalFrames_;
+    if (!std::isfinite(frame->ptsSeconds) ||
+        (hasLastRelease_ && frame->ptsSeconds < lastReleasedPtsSeconds_)) {
+        ++lateDroppedFrames_;
+        return false;
     }
 
-    buffer_.push(frame);
-    totalFrames_++;
-
-    // 计算抖动
-    if (lastPts_ != 0 && frame->pts > lastPts_) {
-        uint32_t jitter = static_cast<uint32_t>(frame->pts - lastPts_);
-        jitterSum_ += jitter;
-        jitterCount_++;
+    if (hasLastArrival_ && frame->ptsSeconds > lastPtsSeconds_ &&
+        frame->recvTime >= lastRecvTime_) {
+        const double arrivalDeltaMs =
+            static_cast<double>((frame->recvTime - lastRecvTime_).count()) / 1000.0;
+        const double ptsDeltaMs = (frame->ptsSeconds - lastPtsSeconds_) * 1000.0;
+        const double sampleMs = std::abs(arrivalDeltaMs - ptsDeltaMs);
+        if (std::isfinite(sampleMs)) {
+            jitterEstimateMs_ += (sampleMs - jitterEstimateMs_) / 16.0;
+            updateTargetLatency();
+        }
     }
-    lastPts_ = static_cast<uint32_t>(frame->pts);
+    if (!hasLastArrival_ || frame->ptsSeconds > lastPtsSeconds_) {
+        lastPtsSeconds_ = frame->ptsSeconds;
+        lastRecvTime_ = frame->recvTime;
+        hasLastArrival_ = true;
+    }
 
-    cv_.notify_one();
-    return true;
+    const auto position = std::upper_bound(
+        buffer_.begin(), buffer_.end(), frame->ptsSeconds,
+        [](double pts, const std::shared_ptr<MediaFrame>& queued) {
+            return pts < queued->ptsSeconds;
+        });
+    buffer_.insert(position, frame);
+    bool keptFrame = true;
+    if (buffer_.size() > maxSize_) {
+        keptFrame = buffer_.front() != frame;
+        buffer_.pop_front();
+        ++overflowDroppedFrames_;
+    }
+
+    cv_.notify_all();
+    return keptFrame;
 }
 
 bool JitterBuffer::pop(std::shared_ptr<MediaFrame>& frame, uint32_t timeoutMs) {
     std::unique_lock<std::mutex> lock(mutex_);
 
-    // 等待直到有数据或超时
-    if (!cv_.wait_for(lock, std::chrono::milliseconds(timeoutMs), 
-                     [this] { return !buffer_.empty(); })) {
-        return false;
+    const auto deadline = std::chrono::steady_clock::now() +
+                          std::chrono::milliseconds(timeoutMs);
+    while (true) {
+        if (!buffer_.empty() && shouldRelease(buffer_.front())) {
+            frame = buffer_.front();
+            buffer_.pop_front();
+            if (std::isfinite(frame->ptsSeconds)) {
+                lastReleasedPtsSeconds_ = frame->ptsSeconds;
+                hasLastRelease_ = true;
+            }
+            return true;
+        }
+        if (timeoutMs == 0 || std::chrono::steady_clock::now() >= deadline) {
+            return false;
+        }
+        auto wakeTime = deadline;
+        if (!buffer_.empty()) {
+            const auto readyTime = std::chrono::steady_clock::time_point(
+                buffer_.front()->recvTime + std::chrono::milliseconds(targetLatencyMs_));
+            wakeTime = std::min(wakeTime, readyTime);
+        }
+        cv_.wait_until(lock, wakeTime);
     }
-
-    if (buffer_.empty()) {
-        return false;
-    }
-
-    // 检查是否应该释放(基于延迟)
-    const auto frontFrame = buffer_.front();
-    if (!shouldRelease(frontFrame)) {
-        return false;
-    }
-
-    // 获取队首帧
-    frame = frontFrame;
-    buffer_.pop();
-    return true;
 }
 
 bool JitterBuffer::shouldRelease(const std::shared_ptr<MediaFrame>& frame) const {
-    if (latencyMs_ == 0) {
-        return true;
+    return std::chrono::steady_clock::now() >=
+           std::chrono::steady_clock::time_point(
+               frame->recvTime + std::chrono::milliseconds(targetLatencyMs_));
+}
+
+void JitterBuffer::updateTargetLatency() {
+    if (!adaptive_ || baseLatencyMs_ == 0) {
+        targetLatencyMs_ = baseLatencyMs_;
+        return;
     }
-
-    // 简单策略：关键帧立即释放，非关键帧需要累积一定数量
-    if (frame->keyFrame) {
-        return true;
-    }
-
-    const auto now = std::chrono::duration_cast<std::chrono::microseconds>(
-        std::chrono::steady_clock::now().time_since_epoch());
-    const auto bufferedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
-        now - frame->recvTime).count();
-
-    return bufferedMs >= latencyMs_;
+    const double proposed = static_cast<double>(baseLatencyMs_) + 4.0 * jitterEstimateMs_;
+    targetLatencyMs_ = proposed >= maxLatencyMs_
+        ? maxLatencyMs_
+        : static_cast<uint32_t>(std::ceil(proposed));
 }
 
 void JitterBuffer::clear() {
     std::unique_lock<std::mutex> lock(mutex_);
     
-    // 交换为空队列
-    std::queue<std::shared_ptr<MediaFrame>> empty;
-    buffer_.swap(empty);
-    
-    lastPts_ = 0;
+    buffer_.clear();
+    overflowDroppedFrames_ = 0;
+    lateDroppedFrames_ = 0;
+    totalFrames_ = 0;
+    lastPtsSeconds_ = 0.0;
+    lastReleasedPtsSeconds_ = 0.0;
+    lastRecvTime_ = std::chrono::microseconds(0);
+    jitterEstimateMs_ = 0.0;
+    targetLatencyMs_ = baseLatencyMs_;
+    hasLastArrival_ = false;
+    hasLastRelease_ = false;
+    cv_.notify_all();
 }
 
 size_t JitterBuffer::size() const {
@@ -113,7 +152,10 @@ bool JitterBuffer::empty() const {
 
 void JitterBuffer::setLatency(uint32_t latencyMs) {
     std::unique_lock<std::mutex> lock(mutex_);
-    latencyMs_ = latencyMs;
+    baseLatencyMs_ = latencyMs;
+    maxLatencyMs_ = std::max(maxLatencyMs_, baseLatencyMs_);
+    updateTargetLatency();
+    cv_.notify_all();
 }
 
 JitterBuffer::Stats JitterBuffer::getStats() const {
@@ -121,9 +163,12 @@ JitterBuffer::Stats JitterBuffer::getStats() const {
     
     Stats stats;
     stats.bufferSize = buffer_.size();
-    stats.droppedFrames = droppedFrames_;
+    stats.droppedFrames = overflowDroppedFrames_ + lateDroppedFrames_;
+    stats.overflowDroppedFrames = overflowDroppedFrames_;
+    stats.lateDroppedFrames = lateDroppedFrames_;
     stats.totalFrames = totalFrames_;
-    stats.avgJitter = (jitterCount_ > 0) ? (jitterSum_ / jitterCount_) : 0;
+    stats.avgJitter = jitterEstimateMs_;
+    stats.targetLatencyMs = targetLatencyMs_;
     
     return stats;
 }

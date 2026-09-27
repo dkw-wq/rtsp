@@ -36,6 +36,8 @@ struct AppConfig {
     FaceDetectionOptions faceDetectionOptions;
     size_t jitterMaxSize = 12;
     uint32_t jitterLatencyMs = 30;
+    bool jitterAdaptive = true;
+    uint32_t jitterMaxLatencyMs = 200;
     ReconnectOptions reconnectOptions;
     size_t maxStreams = 40;
     std::string warning;

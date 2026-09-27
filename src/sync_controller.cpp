@@ -61,6 +61,7 @@ SyncDecision SingleStreamSyncController::synchronize(
     const auto audioStats = audioPlayer.getStats();
     playbackStats.audioActive = audioStats.active;
     playbackStats.audioQueueMs = audioStats.queuedMs;
+    playbackStats.audioDroppedFrames = audioStats.droppedFrames;
 
     if (shouldHoldForAudioStartup(audioStats)) {
         ++droppedFrames_;

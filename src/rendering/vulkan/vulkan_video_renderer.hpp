@@ -228,7 +228,7 @@ private:
                                 int videoHeight,
                                 uint32_t slotIndex,
                                 uint32_t slotCount) const;
-    std::array<std::string, 13> makeStatusLines() const;
+    std::array<std::string, 18> makeStatusLines() const;
     void drawStatusLayout(VkCommandBuffer commandBuffer);
     void drawFaceOverlays(VkCommandBuffer commandBuffer);
     void drawRectOutline(float x, float y, float width, float height, float thickness);

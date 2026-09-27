@@ -172,9 +172,11 @@ sync:
 jitter_buffer:
   max_size: 40
   latency_ms: 50
+  adaptive: true
+  max_latency_ms: 200
 ```
 
-低延迟场景可降低 `latency_ms`；弱网或抖动明显时建议把视频 jitter buffer 和 `audio.target_latency_ms` 一起调高，例如 `300` 或 `1000`。
+`latency_ms` 是基础等待时间；自适应模式根据帧到达间隔与显示时间戳间隔的偏差提高等待时间，上限为 `max_latency_ms`。设置 `adaptive: false` 可使用固定延迟。低延迟场景可降低基础值；弱网时可适当提高基础值与上限，并配合调整 `audio.target_latency_ms`。缓冲区按已解码帧的显示时间戳做有限重排，超过等待窗口才到达的旧帧会丢弃。
 
 ### 多路网格
 

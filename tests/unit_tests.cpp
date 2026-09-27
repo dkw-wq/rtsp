@@ -53,15 +53,93 @@ std::filesystem::path tempYamlPath(const std::string& name) {
     return std::filesystem::temp_directory_path() / name;
 }
 
-void testJitterBufferImmediateKeyFrame() {
-    rtsp::JitterBuffer buffer(4, 1000);
+void testJitterBufferRejectsZeroCapacity() {
+    rtsp::JitterBuffer buffer(0, 0);
+    const auto input = makeVideoFrame(1.0);
+    require(buffer.push(input), "frame push should succeed");
+    require(buffer.size() == 1, "zero capacity should be clamped to one frame");
+
+    std::shared_ptr<rtsp::MediaFrame> output;
+    require(buffer.pop(output, 0), "frame should be available with zero latency");
+    require(output == input, "jitter buffer should return the pushed frame");
+    require(buffer.empty(), "jitter buffer should be empty after pop");
+}
+
+void testJitterBufferWaitsForLatencyIncludingKeyFrames() {
+    rtsp::JitterBuffer buffer(4, 30, false);
     const auto input = makeVideoFrame(1.0, true);
     require(buffer.push(input), "key frame push should succeed");
 
     std::shared_ptr<rtsp::MediaFrame> output;
-    require(buffer.pop(output, 0), "key frame should release immediately");
-    require(output == input, "jitter buffer should return the pushed key frame");
-    require(buffer.empty(), "jitter buffer should be empty after pop");
+    require(!buffer.pop(output, 0), "key frame should respect latency");
+    const auto started = std::chrono::steady_clock::now();
+    require(buffer.pop(output, 100), "pop should wake when latency expires");
+    const auto waited = std::chrono::steady_clock::now() - started;
+    require(waited >= std::chrono::milliseconds(15),
+            "pop should wait for the frame release deadline");
+    require(output == input, "waiting pop should return the key frame");
+}
+
+void testJitterBufferMeasuresArrivalJitterAndAdapts() {
+    rtsp::JitterBuffer buffer(4, 10, true, 18);
+    const auto now = std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::steady_clock::now().time_since_epoch());
+    const auto first = makeVideoFrame(1.000);
+    const auto second = makeVideoFrame(1.033);
+    const auto third = makeVideoFrame(1.066);
+    first->pts = (uint64_t{1} << 33);
+    second->pts = first->pts + 3000;
+    third->pts = second->pts + 3000;
+    first->recvTime = now - std::chrono::milliseconds(200);
+    second->recvTime = now - std::chrono::milliseconds(147);
+    third->recvTime = now - std::chrono::milliseconds(94);
+
+    buffer.push(first);
+    buffer.push(second);
+    buffer.push(third);
+    const auto stats = buffer.getStats();
+    require(stats.avgJitter > 2.3 && stats.avgJitter < 2.5,
+            "jitter should measure arrival deviation in milliseconds, independent of raw PTS");
+    require(stats.targetLatencyMs == 18,
+            "adaptive latency should increase but respect its configured cap");
+}
+
+void testJitterBufferReordersAndDropsTooLateFrames() {
+    rtsp::JitterBuffer buffer(4, 30, false);
+    const auto newest = makeVideoFrame(3.0);
+    const auto oldest = makeVideoFrame(1.0);
+    const auto middle = makeVideoFrame(2.0);
+    newest->recvTime = oldest->recvTime = middle->recvTime =
+        std::chrono::duration_cast<std::chrono::microseconds>(
+            (std::chrono::steady_clock::now() - std::chrono::milliseconds(100))
+                .time_since_epoch());
+    buffer.push(newest);
+    buffer.push(oldest);
+    buffer.push(middle);
+
+    std::shared_ptr<rtsp::MediaFrame> output;
+    require(buffer.pop(output, 0) && output == oldest, "oldest PTS should release first");
+    require(buffer.pop(output, 0) && output == middle, "middle PTS should release second");
+    require(buffer.pop(output, 0) && output == newest, "newest PTS should release last");
+
+    const auto late = makeVideoFrame(2.5);
+    require(!buffer.push(late), "frame older than last released PTS should be dropped");
+    const auto stats = buffer.getStats();
+    require(stats.lateDroppedFrames == 1 && stats.overflowDroppedFrames == 0,
+            "late reordering drops should have their own counter");
+    buffer.clear();
+    const auto resetStats = buffer.getStats();
+    require(resetStats.totalFrames == 0 && resetStats.droppedFrames == 0 &&
+                resetStats.avgJitter == 0.0 && resetStats.bufferSize == 0,
+            "clear should start fresh per-connection statistics");
+
+    rtsp::JitterBuffer smallBuffer(2, 0, false);
+    require(smallBuffer.push(makeVideoFrame(2.0)), "first frame should be retained");
+    require(smallBuffer.push(makeVideoFrame(3.0)), "second frame should be retained");
+    require(!smallBuffer.push(makeVideoFrame(1.0)),
+            "an older frame should be discarded when the reorder window is full");
+    require(smallBuffer.getStats().overflowDroppedFrames == 1,
+            "full reorder window should count its own overflow drop");
 }
 
 void testJitterBufferDropsOldestWhenFull() {
@@ -120,6 +198,8 @@ void testConfigLoaderParsesYaml() {
              << "jitter_buffer:\n"
              << "  max_size: 8\n"
              << "  latency_ms: 40\n"
+             << "  adaptive: false\n"
+             << "  max_latency_ms: 120\n"
              << "audio:\n"
              << "  enabled: false\n"
              << "  target_latency_ms: 70\n"
@@ -166,6 +246,8 @@ void testConfigLoaderParsesYaml() {
     require(!config.rtspOptions.lowLatency, "low latency flag should be parsed");
     require(config.jitterMaxSize == 8, "jitter max size should be parsed");
     require(config.jitterLatencyMs == 40, "jitter latency should be parsed");
+    require(!config.jitterAdaptive && config.jitterMaxLatencyMs == 120,
+            "adaptive jitter options should be parsed");
     require(!config.audioOptions.enabled, "audio enabled should be parsed");
     require(config.audioOptions.targetLatencyMs == 70, "audio target latency should be parsed");
     require(config.syncOptions.maxWaitMs == 12, "sync max wait should be parsed");
@@ -475,7 +557,13 @@ void runTest(const std::string& name, void (*test)()) {
 
 int main() {
     try {
-        runTest("JitterBuffer releases key frames", testJitterBufferImmediateKeyFrame);
+        runTest("JitterBuffer guards zero capacity", testJitterBufferRejectsZeroCapacity);
+        runTest("JitterBuffer waits for latency including key frames",
+                testJitterBufferWaitsForLatencyIncludingKeyFrames);
+        runTest("JitterBuffer measures arrival jitter and adapts",
+                testJitterBufferMeasuresArrivalJitterAndAdapts);
+        runTest("JitterBuffer reorders and resets per-connection statistics",
+                testJitterBufferReordersAndDropsTooLateFrames);
         runTest("JitterBuffer drops oldest frame when full", testJitterBufferDropsOldestWhenFull);
         runTest("JitterBuffer holds non-key frame until latency", testJitterBufferHoldsUntilLatency);
         runTest("ConfigLoader parses YAML", testConfigLoaderParsesYaml);

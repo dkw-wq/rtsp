@@ -9,9 +9,12 @@
 
 namespace rtsp::rendering::opengl {
 
-std::array<std::string, 12> OpenGlVideoRenderer::makeOverlayLines() const {
+std::array<std::string, 18> OpenGlVideoRenderer::makeOverlayLines() const {
     std::ostringstream fps;
     fps << "FPS: " << std::fixed << std::setprecision(1) << playbackStats_.fps;
+    std::ostringstream jitter;
+    jitter << "JITTER: " << std::fixed << std::setprecision(1)
+           << playbackStats_.avgJitterMs << "MS";
 
     return {
         fps.str(),
@@ -19,13 +22,19 @@ std::array<std::string, 12> OpenGlVideoRenderer::makeOverlayLines() const {
         "HW: " + playbackStats_.hardwareDecodeStatus,
         "DECODED: " + std::to_string(playbackStats_.decodedFrames),
         "DROPPED: " + std::to_string(playbackStats_.droppedFrames),
+        "BUFFER FULL: " + std::to_string(playbackStats_.bufferOverflowDrops),
+        "LATE ORDER: " + std::to_string(playbackStats_.lateArrivalDrops),
         "SYNC DROP: " + std::to_string(playbackStats_.syncDroppedFrames),
         "BUFFER: " + std::to_string(playbackStats_.jitterBufferSize),
         "LATENCY: " + std::to_string(playbackStats_.latencyMs) + "MS",
+        "TARGET: " + std::to_string(playbackStats_.targetLatencyMs) + "MS",
+        jitter.str(),
         "AUDIO: " + std::string(playbackStats_.audioActive ? "ON " : "OFF ") +
             std::to_string(playbackStats_.audioQueueMs) + "MS",
+        "AUDIO DROP: " + std::to_string(playbackStats_.audioDroppedFrames),
         "AV DIFF: " + std::to_string(playbackStats_.avSyncDiffMs) + "MS",
         "FILTER: " + filterPipeline_.describe(),
+        "REC DROP: " + std::to_string(recorder_.droppedFrames()),
         recorder_.isRecording() ? "REC: ON" : "REC: OFF"
     };
 }

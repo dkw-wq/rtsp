@@ -240,7 +240,7 @@ private:
     void drawText(float x, float y, const std::string& text, float scale);
     void drawRect(float x, float y, float width, float height);
     void flushOverlay(float red, float green, float blue, float alpha);
-    std::array<std::string, 12> makeOverlayLines() const;
+    std::array<std::string, 18> makeOverlayLines() const;
 
     SDL_Window* window_;
     SDL_GLContext glContext_;

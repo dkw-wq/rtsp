@@ -83,9 +83,11 @@ void logConfig(const AppConfig& config) {
                 config.rtspOptions.bufferSize,
                 describeLowLatency(config.rtspOptions));
     SPDLOG_INFO("OpenGL shader pipeline: {}", describeFilters(config.openglFilterNames));
-    SPDLOG_INFO("Jitter buffer: max_size={}, latency_ms={}",
+    SPDLOG_INFO("Jitter buffer: max_size={}, latency_ms={}, adaptive={}, max_latency_ms={}",
                 config.jitterMaxSize,
-                config.jitterLatencyMs);
+                config.jitterLatencyMs,
+                config.jitterAdaptive,
+                config.jitterMaxLatencyMs);
     SPDLOG_INFO("Audio: enabled={}, target_latency_ms={}, max_queue_ms={}, hard_reset_queue_ms={}",
                 config.audioOptions.enabled,
                 config.audioOptions.targetLatencyMs,

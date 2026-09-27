@@ -24,6 +24,8 @@ struct StreamSessionOptions {
     AudioPlayer* audioPlayer = nullptr;
     size_t jitterMaxSize = 12;
     uint32_t jitterLatencyMs = 30;
+    bool jitterAdaptive = true;
+    uint32_t jitterMaxLatencyMs = 200;
     size_t streamIndex = 0;
 };
 

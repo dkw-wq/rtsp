@@ -15,9 +15,14 @@ struct PlaybackStats {
     double fps = 0.0;
     uint64_t decodedFrames = 0;
     uint64_t droppedFrames = 0;
+    uint64_t bufferOverflowDrops = 0;
+    uint64_t lateArrivalDrops = 0;
     uint64_t syncDroppedFrames = 0;
+    uint64_t audioDroppedFrames = 0;
     size_t jitterBufferSize = 0;
     uint32_t latencyMs = 0;
+    uint32_t targetLatencyMs = 0;
+    double avgJitterMs = 0.0;
     int32_t avSyncDiffMs = 0;
     uint32_t audioQueueMs = 0;
     bool audioActive = false;

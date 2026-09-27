@@ -31,6 +31,7 @@ public:
 
     bool isRecording() const;
     bool wantsFrame() const;
+    uint64_t droppedFrames() const;
     const std::string& outputPath() const;
 
 private:

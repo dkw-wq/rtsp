@@ -94,6 +94,8 @@ rtsp:
 jitter_buffer:
   max_size: 40      # 最大缓冲帧数
   latency_ms: 50    # 目标延迟(毫秒)，双路音频拆分时建议与 audio.target_latency_ms 接近
+  adaptive: true    # 根据帧到达抖动动态增加延迟
+  max_latency_ms: 200
 
 # 音频播放设置
 audio:

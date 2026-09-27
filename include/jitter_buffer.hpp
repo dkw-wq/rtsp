@@ -4,7 +4,7 @@
 #include <array>
 #include <vector>
 #include <memory>
-#include <queue>
+#include <deque>
 #include <mutex>
 #include <condition_variable>
 #include <chrono>
@@ -66,16 +66,19 @@ struct MediaFrame {
 
 /**
  * @brief Jitter Buffer
- * @note 用于平滑RTP数据包的时序抖动
+ * @note 缓冲已解码的视频帧，按显示时间戳进行有限重排
  */
 class JitterBuffer {
 public:
     /**
      * @brief 构造函数
      * @param maxSize 最大缓冲帧数
-     * @param latencyMs 目标延迟(毫秒)
+     * @param latencyMs 基础延迟(毫秒)
+     * @param adaptive 是否根据帧到达抖动调整延迟
+     * @param maxLatencyMs 自适应延迟上限(毫秒)
      */
-    JitterBuffer(size_t maxSize = 12, uint32_t latencyMs = 30);
+    JitterBuffer(size_t maxSize = 12, uint32_t latencyMs = 30,
+                 bool adaptive = true, uint32_t maxLatencyMs = 200);
 
     ~JitterBuffer();
 
@@ -119,28 +122,39 @@ public:
      */
     struct Stats {
         size_t bufferSize;
-        uint32_t avgJitter;
+        double avgJitter; // 接收间隔与显示间隔之差的 EWMA，单位 ms
+        uint32_t targetLatencyMs;
         uint64_t droppedFrames;
+        uint64_t overflowDroppedFrames;
+        uint64_t lateDroppedFrames;
         uint64_t totalFrames;
     };
     Stats getStats() const;
 
 private:
     bool shouldRelease(const std::shared_ptr<MediaFrame>& frame) const;
+    void updateTargetLatency();
 
     size_t maxSize_;
-    uint32_t latencyMs_;
-    std::queue<std::shared_ptr<MediaFrame>> buffer_;
+    uint32_t baseLatencyMs_;
+    uint32_t targetLatencyMs_;
+    uint32_t maxLatencyMs_;
+    bool adaptive_;
+    std::deque<std::shared_ptr<MediaFrame>> buffer_;
 
     mutable std::mutex mutex_;
     std::condition_variable cv_;
 
     // 统计信息
-    uint64_t droppedFrames_;
+    uint64_t overflowDroppedFrames_;
+    uint64_t lateDroppedFrames_;
     uint64_t totalFrames_;
-    uint32_t lastPts_;
-    uint32_t jitterSum_;
-    uint32_t jitterCount_;
+    double lastPtsSeconds_;
+    double lastReleasedPtsSeconds_;
+    std::chrono::microseconds lastRecvTime_;
+    double jitterEstimateMs_;
+    bool hasLastArrival_;
+    bool hasLastRelease_;
 };
 
 } // namespace rtsp

@@ -341,6 +341,11 @@ public:
         return recording_;
     }
 
+    uint64_t droppedFrames() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return static_cast<uint64_t>(droppedFrames_);
+    }
+
     bool wantsFrame() const {
         const auto now = Clock::now();
         std::lock_guard<std::mutex> lock(mutex_);
@@ -628,6 +633,10 @@ bool RgbVideoRecorder::isRecording() const {
 
 bool RgbVideoRecorder::wantsFrame() const {
     return pImpl_->wantsFrame();
+}
+
+uint64_t RgbVideoRecorder::droppedFrames() const {
+    return pImpl_->droppedFrames();
 }
 
 const std::string& RgbVideoRecorder::outputPath() const {
