@@ -378,21 +378,11 @@ int runMultiStreamImpl(const rtsp::AppConfig& config) {
             }
 
             std::shared_ptr<rtsp::MediaFrame> nextFrame;
-            const bool syncOrderedPlayback =
-                index == 0 && config.syncOptions.enabled && audioPlayer->hasClock();
+            // A ready jitter-buffer frame is still eligible for playback.
             if (!stream.pendingFrame &&
                 stream.jitterBuffer().pop(nextFrame, index == 0 ? 8 : 0)) {
                 stream.pendingFrame = nextFrame;
                 stream.noteInputFrame();
-                if (!syncOrderedPlayback) {
-                    while (stream.jitterBuffer().pop(nextFrame, 0)) {
-                        if (stream.pendingFrame) {
-                            ++stream.stats.syncDroppedFrames;
-                        }
-                        stream.pendingFrame = nextFrame;
-                        stream.noteInputFrame();
-                    }
-                }
             }
 
             if (stream.pendingFrame) {
@@ -415,30 +405,25 @@ int runMultiStreamImpl(const rtsp::AppConfig& config) {
                         break;
                     }
 
-                    const auto lateMs =
+                    auto lateMs =
                         std::chrono::duration_cast<std::chrono::milliseconds>(now - targetTime).count();
-                    if (config.syncOptions.lateDropMs > 0 &&
-                        lateMs > static_cast<int64_t>(config.syncOptions.lateDropMs)) {
-                        bool foundNewerFrame = false;
-                        while (stream.jitterBuffer().pop(nextFrame, 0)) {
-                            stream.pendingFrame = nextFrame;
-                            stream.noteInputFrame();
-                            ++stream.stats.syncDroppedFrames;
-                            foundNewerFrame = true;
+                    // Catch up only while the current frame has missed its playback deadline.
+                    while (config.syncOptions.lateDropMs > 0 &&
+                           lateMs > static_cast<int64_t>(config.syncOptions.lateDropMs)) {
+                        ++stream.stats.syncDroppedFrames;
+                        if (!stream.jitterBuffer().pop(nextFrame, 0)) {
+                            stream.pendingFrame.reset();
+                            break;
                         }
-
-                        if (foundNewerFrame) {
-                            const auto updatedTargetTime =
-                                rtsp::frameTargetTimeByReceiveTime(stream.pendingFrame, targetDelayMs);
-                            const auto updatedLateMs =
-                                std::chrono::duration_cast<std::chrono::milliseconds>(
-                                    std::chrono::steady_clock::now() - updatedTargetTime).count();
-                            if (updatedLateMs > static_cast<int64_t>(config.syncOptions.lateDropMs)) {
-                                ++stream.stats.syncDroppedFrames;
-                                stream.pendingFrame.reset();
-                                continue;
-                            }
-                        }
+                        stream.pendingFrame = nextFrame;
+                        stream.noteInputFrame();
+                        const auto updatedTargetTime =
+                            rtsp::frameTargetTimeByReceiveTime(stream.pendingFrame, targetDelayMs);
+                        lateMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                            std::chrono::steady_clock::now() - updatedTargetTime).count();
+                    }
+                    if (!stream.pendingFrame) {
+                        continue;
                     }
                 }
 
