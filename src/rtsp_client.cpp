@@ -1,5 +1,6 @@
 #include "rtsp_client.hpp"
 #include "jitter_buffer.hpp"
+#include "sync_controller.hpp"
 #include "rtsp_audio_decoder.hpp"
 #include "rtsp_ffmpeg_utils.hpp"
 #include "rtsp_frame_converter.hpp"
@@ -29,9 +30,6 @@ public:
         , videoStream_(-1)
         , audioStream_(-1)
         , videoFrameDurationSeconds_(1.0 / 30.0)
-        , nextSyntheticVideoPtsSeconds_(0.0)
-        , lastVideoPtsSeconds_(0.0)
-        , hasLastVideoPts_(false)
         , hardwareFrameOutputEnabled_(false)
         , audioEnabled_(true)
         , videoEnabled_(true)
@@ -115,9 +113,7 @@ public:
             height_ = codecParams->height;
             videoFrameDurationSeconds_ =
                 ffmpeg::streamFrameDurationSeconds(formatContext_, videoStream_);
-            nextSyntheticVideoPtsSeconds_ = 0.0;
-            lastVideoPtsSeconds_ = 0.0;
-            hasLastVideoPts_ = false;
+            videoTimestamps_.reset();
             waitingForVideoKeyframe_ = true;
             videoStarted_ = false;
 
@@ -248,9 +244,7 @@ public:
 
         videoStream_ = -1;
         audioStream_ = -1;
-        nextSyntheticVideoPtsSeconds_ = 0.0;
-        lastVideoPtsSeconds_ = 0.0;
-        hasLastVideoPts_ = false;
+        videoTimestamps_.reset();
         waitingForVideoKeyframe_ = true;
         videoStarted_ = false;
         width_ = 0;
@@ -344,22 +338,7 @@ private:
         double candidate = 0.0;
         const bool hasCandidate =
             ffmpeg::frameTimestampSeconds(formatContext_, frame, videoStream_, candidate);
-        bool useCandidate = hasCandidate;
-
-        if (hasLastVideoPts_ && hasCandidate) {
-            const double delta = candidate - lastVideoPtsSeconds_;
-            const double maxReasonableDelta = std::max(0.20, videoFrameDurationSeconds_ * 4.0);
-            if (delta <= 0.0 || delta > maxReasonableDelta) {
-                useCandidate = false;
-            }
-        }
-
-        const double ptsSeconds =
-            useCandidate ? candidate : nextSyntheticVideoPtsSeconds_;
-        hasLastVideoPts_ = true;
-        lastVideoPtsSeconds_ = ptsSeconds;
-        nextSyntheticVideoPtsSeconds_ = ptsSeconds + videoFrameDurationSeconds_;
-        return ptsSeconds;
+        return videoTimestamps_.stabilize(candidate, hasCandidate, videoFrameDurationSeconds_);
     }
 
     static int interruptCallback(void* opaque) {
@@ -584,9 +563,7 @@ private:
     int videoStream_;
     int audioStream_;
     double videoFrameDurationSeconds_;
-    double nextSyntheticVideoPtsSeconds_;
-    double lastVideoPtsSeconds_;
-    bool hasLastVideoPts_;
+    VideoTimestampTracker videoTimestamps_;
     bool hardwareFrameOutputEnabled_;
     bool audioEnabled_;
     bool videoEnabled_;

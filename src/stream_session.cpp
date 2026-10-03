@@ -125,8 +125,8 @@ void StreamSession::refreshStats() {
     updateFrameLatency(latestFrame, stats);
 }
 
-void StreamSession::noteInputFrame() {
-    ++receivedFramesSinceFpsUpdate_;
+void StreamSession::noteInputFrame(uint64_t count) {
+    receivedFramesSinceFpsUpdate_ += count;
 }
 
 void StreamSession::updateInputFpsIfDue() {

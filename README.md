@@ -21,7 +21,9 @@ Windows RTSP 播放器，基于 FFmpeg 解码，支持 SDL/OpenGL/Vulkan 渲染�
 
 核心边界：
 
-- `PlayerRunner` 负责单路/多路播放主循环、重连、同步等待和渲染调度。
+- `PlayerRunner` 负责单路/多路播放主循环、重连，并执行同步模块返回的等待、渲染或等待新帧决策。
+- `sync_controller.cpp` 集中实现单路/多路同步策略、音频预缓冲与时钟、视频时间戳修正和 jitter buffer 自适应延迟/释放时序；各流的时序状态独立维护。
+- `AudioPlayer` 负责 SDL 音频设备和队列操作，`JitterBuffer` 负责帧队列、排序、容量限制与线程安全，二者调用同步模块做时序判断。
 - `StreamSession` 封装单路流状态，把 `RtspClient` 输出的视频帧推入 `JitterBuffer`，把音频帧转给 `AudioPlayer`。
 - `RtspClient` 负责 RTSP 连接和收包主循环；音频解码、硬解上下文、NV12 转换和录制分别由独立模块承载。
 - `VideoRenderer` 是渲染后端接口，SDL/OpenGL/Vulkan 共享播放状态和 overlay 输入。
@@ -164,7 +166,9 @@ sync:
   audio_offset_ms: 0
 ```
 
-开启音频时，视频以音频时钟为主时钟：视频早到会短暂等待，晚到超过 `late_drop_ms` 会丢帧追赶。`audio_offset_ms` 为正数时让视频相对音频晚显示，为负数时让视频更早显示。
+单路播放时，视频以音频时钟为主时钟：视频早到会短暂等待，晚到超过 `late_drop_ms` 会丢帧追赶；没有音频时钟时，按视频 PTS 与本地单调时钟调度。
+
+多路播放时，仅第一路视频在音频时钟可用时按“接收时间 + 音频目标延迟 + `audio_offset_ms`”等待或丢帧追赶，其余视频由各自的 jitter buffer 释放。这是第一路视频的延迟补偿，不提供多摄像头时间轴对齐。`audio_offset_ms` 当前仅作用于多路模式，正数让视频晚显示，负数让视频早显示，合计延迟最低为 0。
 
 ### Jitter Buffer
 
@@ -377,7 +381,9 @@ cmake --build build-vcpkg --config Release --target onnx_cuda_probe
 主要代码结构：
 
 - `src/rtsp_client.cpp`：RTSP 输入、FFmpeg 解复用、音视频解码、硬解回退和录制。
-- `src/player_runner.cpp`：单路/多路播放主循环、同步、重连和渲染调度。
+- `src/player_runner.cpp`：单路/多路播放主循环、同步决策执行、重连和渲染调度。
+- `src/sync_controller.cpp`：单路/多路同步决策、音频时钟与预缓冲、视频时间戳修正、jitter buffer 时序策略。
+- `src/audio_player.cpp` / `src/jitter_buffer.cpp`：音频设备和帧队列操作，调用同步模块的时序策略。
 - `src/rendering/`：SDL、OpenGL、Vulkan 渲染后端。
 - `src/onnx_scrfd_detector.cpp`：SCRFD ONNX 推理与后处理。
 - `tests/unit_tests.cpp`：配置、jitter buffer 和同步逻辑测试。

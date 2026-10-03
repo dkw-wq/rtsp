@@ -10,7 +10,6 @@
 
 #include <algorithm>
 #include <chrono>
-#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <future>
@@ -336,6 +335,7 @@ int runMultiStreamImpl(const rtsp::AppConfig& config) {
     };
 
     SPDLOG_INFO("Adaptive RTSP streaming started, press ESC or Q to quit");
+    rtsp::MultiStreamSyncController sync(config.syncOptions, config.audioOptions.targetLatencyMs);
 
     while (g_running && renderer->handleEvents()) {
         bool hasNewVideoFrame = false;
@@ -386,45 +386,17 @@ int runMultiStreamImpl(const rtsp::AppConfig& config) {
             }
 
             if (stream.pendingFrame) {
-                if (index == 0 && config.syncOptions.enabled && audioPlayer->hasClock()) {
-                    const int targetDelayMs =
-                        config.audioOptions.targetLatencyMs + config.syncOptions.audioOffsetMs;
-                    const auto now = std::chrono::steady_clock::now();
-                    const auto targetTime =
-                        rtsp::frameTargetTimeByReceiveTime(stream.pendingFrame, targetDelayMs);
-
-                    if (now < targetTime) {
-                        const int waitMs = std::clamp(
-                            static_cast<int>(std::ceil(
-                                std::chrono::duration<double, std::milli>(targetTime - now).count())),
-                            1,
-                            std::max(config.syncOptions.maxWaitMs, 1));
-                        stream.stats.avSyncDiffMs = waitMs;
-                        std::this_thread::sleep_for(std::chrono::milliseconds(waitMs));
-                        waitingForSync = true;
-                        break;
-                    }
-
-                    auto lateMs =
-                        std::chrono::duration_cast<std::chrono::milliseconds>(now - targetTime).count();
-                    // Catch up only while the current frame has missed its playback deadline.
-                    while (config.syncOptions.lateDropMs > 0 &&
-                           lateMs > static_cast<int64_t>(config.syncOptions.lateDropMs)) {
-                        ++stream.stats.syncDroppedFrames;
-                        if (!stream.jitterBuffer().pop(nextFrame, 0)) {
-                            stream.pendingFrame.reset();
-                            break;
-                        }
-                        stream.pendingFrame = nextFrame;
-                        stream.noteInputFrame();
-                        const auto updatedTargetTime =
-                            rtsp::frameTargetTimeByReceiveTime(stream.pendingFrame, targetDelayMs);
-                        lateMs = std::chrono::duration_cast<std::chrono::milliseconds>(
-                            std::chrono::steady_clock::now() - updatedTargetTime).count();
-                    }
-                    if (!stream.pendingFrame) {
-                        continue;
-                    }
+                const auto decision = sync.synchronize(
+                    index, stream.pendingFrame, stream.jitterBuffer(),
+                    audioPlayer->hasClock(), stream.stats);
+                stream.noteInputFrame(decision.catchUpFrames);
+                if (decision.type == rtsp::SyncDecision::Type::Wait) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(decision.waitMs));
+                    waitingForSync = true;
+                    break;
+                }
+                if (decision.type == rtsp::SyncDecision::Type::WaitingForNewerFrame) {
+                    continue;
                 }
 
                 stream.latestFrame = stream.pendingFrame;

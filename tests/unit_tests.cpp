@@ -4,6 +4,7 @@
 #include "rtsp_frame_converter.hpp"
 #include "rtsp_hardware_decoder.hpp"
 #include "sync_controller.hpp"
+#include "video_renderer.hpp"
 
 #include <algorithm>
 #include <array>
@@ -20,6 +21,7 @@
 #include <thread>
 
 extern "C" {
+#include <SDL2/SDL.h>
 #include <libavcodec/avcodec.h>
 #include <libavutil/frame.h>
 #include <libavutil/pixfmt.h>
@@ -546,6 +548,231 @@ void testSyncDropsLateFrameAndUsesCatchUpFrame() {
     require(frame == catchUpFrame, "catch-up frame should become the frame to render");
     require(sync.droppedFrames() == 1, "late frame should increment sync dropped frame count");
     require(stats.syncDroppedFrames == 1, "playback stats should expose sync dropped frame count");
+    require(decision.catchUpFrames == 1, "catch-up frame should be counted for input statistics");
+}
+
+void testVideoTimestampRecoveryAndReset() {
+    rtsp::VideoTimestampTracker timestamps;
+    constexpr double duration = 0.04;
+    const auto check = [&](double candidate, bool present, double expected) {
+        require(std::abs(timestamps.stabilize(candidate, present, duration) - expected) < 1e-9,
+                "video timestamp should preserve valid progress or synthesize one frame interval");
+    };
+    check(10.0, true, 10.0);
+    check(0.0, false, 10.04);
+    check(10.04, true, 10.08);
+    check(1.0, true, 10.12);
+    check(20.0, true, 10.16);
+    check(10.20, true, 10.20);
+
+    timestamps.reset();
+    check(100.0, true, 100.0);
+    timestamps.reset();
+    check(0.0, false, 0.0);
+    check(0.0, false, 0.04);
+
+    timestamps.reset();
+    timestamps.stabilize(1.0, true, 0.1);
+    require(std::abs(timestamps.stabilize(1.3, true, 0.1) - 1.3) < 1e-9,
+            "low frame rates should allow a timestamp gap of up to four frame intervals");
+}
+
+void testAudioTimingPrebufferClockAndReset() {
+    rtsp::AudioPlaybackTiming timing({true, 30, 800, 1500});
+    timing.resetForDevice();
+    require(!timing.active() && !timing.hasClock(), "new audio device should await prebuffer");
+    timing.noteQueuedFrame(10.0, 0.02);
+    require(timing.hasClock() && !timing.startIfReady(20),
+            "queued audio should establish a clock before reaching the startup target");
+    require(std::abs(timing.clockSeconds(0.015) - 10.005) < 1e-9,
+            "audio clock should subtract unplayed audio from the queued end timestamp");
+    timing.noteQueuedFrame(10.02, 0.02);
+    require(timing.startIfReady(40) && timing.active(), "sufficient audio should start playback");
+    require(!timing.startIfReady(0) && timing.active(), "a drained queue should keep playback started");
+    timing.noteQueuedFrame(9.0, 0.02);
+    require(std::abs(timing.clockSeconds(0.01) - 10.03) < 1e-9,
+            "older audio timestamps should not move the queued end backward");
+    require(!timing.shouldResetQueue(801) && !timing.shouldResetQueue(1500) &&
+                timing.shouldResetQueue(1501),
+            "only exceeding the hard limit should request an audio queue reset");
+    timing.resetQueue(20.0);
+    timing.noteQueuedFrame(20.0, 0.02);
+    require(timing.active() && std::abs(timing.clockSeconds(0.02) - 20.0) < 1e-9,
+            "hard queue reset should rebase the clock and continue playback");
+    timing.reset();
+    require(!timing.active() && !timing.hasClock() && timing.clockSeconds(0.0) == 0.0,
+            "disconnect should clear audio startup and clock state");
+
+    rtsp::AudioPlaybackTiming immediate({true, 0, 800, 1500});
+    immediate.resetForDevice();
+    require(immediate.active() && !immediate.hasClock(),
+            "zero target latency should start the device before the first audio frame");
+    const auto normalized = rtsp::normalizeAudioPlaybackOptions({true, 6000, 1, 2});
+    require(normalized.targetLatencyMs == 5000 && normalized.maxQueueMs == 5500 &&
+                normalized.hardResetQueueMs == 6000,
+            "audio queue limits should retain their startup and recovery margins");
+}
+
+void testAudioPlayerAndSingleStreamSyncIntegration() {
+    require(SDL_setenv("SDL_AUDIODRIVER", "dummy", 1) == 0,
+            "dummy audio driver should be selected for the integration test");
+    rtsp::AudioPlayer audioPlayer({true, 30, 800, 1500});
+    auto audio = std::make_shared<rtsp::MediaFrame>();
+    audio->type = rtsp::MediaFrame::Type::AUDIO;
+    audio->sampleRate = 48000;
+    audio->channels = 2;
+    audio->bytesPerSample = 2;
+    audio->ptsSeconds = 20.0;
+    audio->data.resize(960 * 2 * 2); // 20 ms, also exercises duration calculation from PCM bytes.
+    require(audioPlayer.pushFrame(audio), "dummy device should accept the first audio frame");
+    require(audioPlayer.hasClock() && !audioPlayer.getStats().active &&
+                std::abs(audioPlayer.clockSeconds() - 20.0) < 1e-9,
+            "prebuffered audio should expose its clock while the device remains paused");
+
+    rtsp::SingleStreamSyncController sync;
+    rtsp::JitterBuffer buffer(4, 0);
+    rtsp::PlaybackStats stats;
+    auto pending = makeVideoFrame(10.0);
+    auto frame = pending;
+    buffer.push(makeVideoFrame(10.02));
+    auto decision = sync.synchronize(frame, pending, buffer, audioPlayer, stats);
+    require(decision.type == rtsp::SyncDecision::Type::Wait && decision.waitMs == 5 &&
+                !pending && buffer.empty() && stats.syncDroppedFrames == 2,
+            "video should discard ready stale frames while audio is still prebuffering");
+
+    audio->ptsSeconds = 20.02;
+    require(audioPlayer.pushFrame(audio) && audioPlayer.getStats().active,
+            "reaching the prebuffer target should start the audio device");
+    pending = makeVideoFrame(11.0);
+    frame = pending;
+    decision = sync.synchronize(frame, pending, buffer, audioPlayer, stats);
+    require(decision.type == rtsp::SyncDecision::Type::Render && stats.audioActive,
+            "single-stream sync should establish relative bases after audio startup");
+    pending = makeVideoFrame(12.0);
+    frame = pending;
+    decision = sync.synchronize(frame, pending, buffer, audioPlayer, stats);
+    require(decision.type == rtsp::SyncDecision::Type::Wait && decision.waitMs == 16,
+            "video ahead of the audio clock should wait in bounded steps");
+    pending = makeVideoFrame(1.0);
+    frame = pending;
+    decision = sync.synchronize(frame, pending, buffer, audioPlayer, stats);
+    require(decision.type == rtsp::SyncDecision::Type::WaitingForNewerFrame && !pending &&
+                stats.syncDroppedFrames == 3,
+            "late video without a ready replacement should wait for a newer frame");
+
+    audioPlayer.reset();
+    sync.reset();
+    require(!audioPlayer.hasClock() && !audioPlayer.getStats().active,
+            "audio reset should clear the published clock and playback state");
+    pending = makeVideoFrame(50.0);
+    frame = pending;
+    decision = sync.synchronize(frame, pending, buffer, audioPlayer, stats);
+    require(decision.type == rtsp::SyncDecision::Type::Render && stats.syncDroppedFrames == 0,
+            "reconnect should establish a fresh video-only base and reset dropped-frame counts");
+}
+
+void testMultiStreamSyncWaitAndOffset() {
+    rtsp::SyncOptions options;
+    options.maxWaitMs = 12;
+    options.audioOffsetMs = 2000;
+    rtsp::MultiStreamSyncController sync(options, 100);
+    rtsp::JitterBuffer buffer(4, 0);
+    rtsp::PlaybackStats stats;
+    auto pending = makeVideoFrame(10.0, false, 1000);
+    const auto original = pending;
+    const auto decision = sync.synchronize(0, pending, buffer, true, stats);
+    require(decision.type == rtsp::SyncDecision::Type::Wait && decision.waitMs == 12 &&
+                stats.avSyncDiffMs == 12 && pending == original && decision.catchUpFrames == 0,
+            "primary video should honor positive offset and keep its pending frame while waiting");
+
+    options.maxWaitMs = 0;
+    rtsp::MultiStreamSyncController minimumWait(options, 100);
+    require(minimumWait.synchronize(0, pending, buffer, true, stats).waitMs == 1,
+            "multi-stream mode should retain its minimum one-millisecond wait");
+
+    options.audioOffsetMs = -1500;
+    rtsp::MultiStreamSyncController negativeOffset(options, 1000);
+    pending = makeVideoFrame(10.0);
+    require(negativeOffset.synchronize(0, pending, buffer, true, stats).type ==
+                rtsp::SyncDecision::Type::Render && stats.syncDroppedFrames == 0,
+            "negative offset should clamp total receive delay to zero instead of dropping a new frame");
+}
+
+void testMultiStreamSyncBypassAndOnTimeFrames() {
+    rtsp::SyncOptions options;
+    options.lateDropMs = 5000;
+    rtsp::MultiStreamSyncController sync(options, 10000);
+    rtsp::JitterBuffer buffer(4, 0);
+    rtsp::PlaybackStats stats;
+    auto pending = makeVideoFrame(1.0);
+    const auto original = pending;
+    const auto queued = makeVideoFrame(2.0);
+    buffer.push(queued);
+    require(sync.synchronize(1, pending, buffer, true, stats).type == rtsp::SyncDecision::Type::Render,
+            "secondary video should bypass the primary audio delay");
+    require(sync.synchronize(0, pending, buffer, false, stats).type == rtsp::SyncDecision::Type::Render,
+            "primary video should bypass delay while the audio clock is unavailable");
+    options.enabled = false;
+    rtsp::MultiStreamSyncController disabled(options, 10000);
+    require(disabled.synchronize(0, pending, buffer, true, stats).type == rtsp::SyncDecision::Type::Render &&
+                pending == original && buffer.size() == 1 && stats.syncDroppedFrames == 0,
+            "disabled synchronization should retain both pending and queued frames");
+
+    options.enabled = true;
+    rtsp::MultiStreamSyncController onTime(options, 30);
+    pending = makeVideoFrame(1.0, false, 100);
+    const auto onTimeFrame = pending;
+    const auto decision = onTime.synchronize(0, pending, buffer, true, stats);
+    require(decision.type == rtsp::SyncDecision::Type::Render && pending == onTimeFrame &&
+                decision.catchUpFrames == 0 && buffer.size() == 1,
+            "an on-time pending frame should render without draining other ready frames");
+}
+
+void testMultiStreamSyncCatchesUpUntilDeadline() {
+    rtsp::SyncOptions options;
+    options.lateDropMs = 500;
+    rtsp::MultiStreamSyncController sync(options, 50);
+    rtsp::JitterBuffer buffer(4, 0);
+    rtsp::PlaybackStats stats;
+    stats.syncDroppedFrames = 7;
+    auto pending = makeVideoFrame(1.0, false, 3000);
+    buffer.push(makeVideoFrame(2.0, false, 2000));
+    const auto catchUp = makeVideoFrame(3.0, false, 100);
+    buffer.push(catchUp);
+    buffer.push(makeVideoFrame(4.0, false, 100));
+    const auto decision = sync.synchronize(0, pending, buffer, true, stats);
+    require(decision.type == rtsp::SyncDecision::Type::Render && pending == catchUp &&
+                decision.catchUpFrames == 2 && stats.syncDroppedFrames == 9 && buffer.size() == 1,
+            "catch-up should stop at the first on-time frame and count every consumed replacement");
+}
+
+void testMultiStreamSyncWaitsForReadyReplacement() {
+    rtsp::SyncOptions options;
+    options.lateDropMs = 500;
+    rtsp::MultiStreamSyncController sync(options, 50);
+    rtsp::JitterBuffer buffer(4, 0);
+    rtsp::PlaybackStats stats;
+    auto pending = makeVideoFrame(1.0, false, 3000);
+    buffer.push(makeVideoFrame(2.0, false, 2000));
+    auto decision = sync.synchronize(0, pending, buffer, true, stats);
+    require(decision.type == rtsp::SyncDecision::Type::WaitingForNewerFrame && !pending &&
+                decision.catchUpFrames == 1 && stats.syncDroppedFrames == 2,
+            "exhausting stale replacements should clear the pending frame and retain drop counts");
+
+    rtsp::JitterBuffer delayedBuffer(4, 1000, false);
+    delayedBuffer.push(makeVideoFrame(4.0));
+    pending = makeVideoFrame(3.0, false, 3000);
+    decision = sync.synchronize(0, pending, delayedBuffer, true, stats);
+    require(decision.type == rtsp::SyncDecision::Type::WaitingForNewerFrame && !pending &&
+                decision.catchUpFrames == 0 && delayedBuffer.size() == 1,
+            "catch-up must respect the jitter buffer release deadline");
+
+    options.lateDropMs = 0;
+    rtsp::MultiStreamSyncController noDrop(options, 50);
+    pending = makeVideoFrame(3.0, false, 3000);
+    require(noDrop.synchronize(0, pending, delayedBuffer, true, stats).type ==
+                rtsp::SyncDecision::Type::Render && pending && stats.syncDroppedFrames == 3,
+            "disabling late drops should render even an overdue pending frame");
 }
 
 void runTest(const std::string& name, void (*test)()) {
@@ -583,6 +810,14 @@ int main() {
         runTest("SyncController waits for future video frame", testSyncWaitsForFutureVideoFrame);
         runTest("SyncController drops late frame and uses catch-up frame",
                 testSyncDropsLateFrameAndUsesCatchUpFrame);
+        runTest("Video timestamps recover from invalid progress and reset", testVideoTimestampRecoveryAndReset);
+        runTest("Audio timing controls prebuffer, clock and reset", testAudioTimingPrebufferClockAndReset);
+        runTest("Audio player integrates with single-stream synchronization",
+                testAudioPlayerAndSingleStreamSyncIntegration);
+        runTest("Multi-stream sync waits with audio offset", testMultiStreamSyncWaitAndOffset);
+        runTest("Multi-stream sync preserves bypassed and on-time frames", testMultiStreamSyncBypassAndOnTimeFrames);
+        runTest("Multi-stream sync catches up until the deadline", testMultiStreamSyncCatchesUpUntilDeadline);
+        runTest("Multi-stream sync waits for a ready replacement", testMultiStreamSyncWaitsForReadyReplacement);
     } catch (const std::exception& e) {
         std::cerr << "[FAIL] " << e.what() << '\n';
         return EXIT_FAILURE;

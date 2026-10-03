@@ -1,8 +1,8 @@
 #include "audio_player.hpp"
+#include "sync_controller.hpp"
 
 #include <spdlog/spdlog.h>
 
-#include <algorithm>
 #include <chrono>
 #include <cstdint>
 #include <mutex>
@@ -39,13 +39,9 @@ double bytesToSeconds(uint32_t bytes, int sampleRate, int channels, int bytesPer
 class AudioPlayer::Impl {
 public:
     explicit Impl(AudioPlaybackOptions options)
-        : options_(options)
+        : options_(normalizeAudioPlaybackOptions(options))
+        , timing_(options_)
     {
-        options_.targetLatencyMs = std::clamp(options_.targetLatencyMs, 0, 5000);
-        options_.maxQueueMs = std::max(options_.maxQueueMs, 500);
-        options_.maxQueueMs = std::max(options_.maxQueueMs, options_.targetLatencyMs + 500);
-        options_.hardResetQueueMs =
-            std::max(options_.hardResetQueueMs, options_.maxQueueMs + 500);
         stats_.enabled = options_.enabled;
     }
 
@@ -68,17 +64,13 @@ public:
         const uint32_t queuedBefore = SDL_GetQueuedAudioSize(device_);
         const uint32_t queuedBeforeMs =
             bytesToMs(queuedBefore, sampleRate_, channels_, bytesPerSample_);
-        if (queuedBeforeMs > static_cast<uint32_t>(options_.hardResetQueueMs)) {
+        if (timing_.shouldResetQueue(queuedBeforeMs)) {
             SDL_ClearQueuedAudio(device_);
-            queuedAudioEndSeconds_ = frame->ptsSeconds;
-            playbackStarted_ = true;
+            timing_.resetQueue(frame->ptsSeconds);
             SDL_PauseAudioDevice(device_, 0);
             ++stats_.droppedFrames;
             warnQueueLimited("Audio queue exceeded hard limit; resetting queued audio",
                              queuedBeforeMs);
-        } else if (queuedBeforeMs > static_cast<uint32_t>(options_.maxQueueMs)) {
-            /*warnQueueLimited("Audio queue exceeded soft limit; waiting for playback to catch up",
-                             queuedBeforeMs);*/
         }
 
         if (SDL_QueueAudio(device_, frame->data.data(),
@@ -93,9 +85,7 @@ public:
                 ? frame->durationSeconds
                 : bytesToSeconds(static_cast<uint32_t>(frame->data.size()),
                                  sampleRate_, channels_, bytesPerSample_);
-        queuedAudioEndSeconds_ = std::max(queuedAudioEndSeconds_,
-                                          frame->ptsSeconds + duration);
-        hasClock_ = true;
+        timing_.noteQueuedFrame(frame->ptsSeconds, duration);
         ++stats_.playedFrames;
         stats_.queuedMs = queuedMsLocked();
         maybeStartPlayback();
@@ -114,27 +104,25 @@ public:
         sampleRate_ = 0;
         channels_ = 0;
         bytesPerSample_ = 0;
-        queuedAudioEndSeconds_ = 0.0;
-        hasClock_ = false;
-        playbackStarted_ = false;
+        timing_.reset();
         stats_ = {};
         stats_.enabled = options_.enabled;
     }
 
     bool hasClock() const {
         std::lock_guard<std::mutex> lock(mutex_);
-        return hasClock_ && device_ != 0;
+        return timing_.hasClock() && device_ != 0;
     }
 
     double clockSeconds() const {
         std::lock_guard<std::mutex> lock(mutex_);
-        if (!hasClock_ || device_ == 0) {
+        if (!timing_.hasClock() || device_ == 0) {
             return 0.0;
         }
 
         const uint32_t queuedBytes = SDL_GetQueuedAudioSize(device_);
-        return queuedAudioEndSeconds_ -
-               bytesToSeconds(queuedBytes, sampleRate_, channels_, bytesPerSample_);
+        return timing_.clockSeconds(
+            bytesToSeconds(queuedBytes, sampleRate_, channels_, bytesPerSample_));
     }
 
     uint32_t queuedMs() const {
@@ -146,7 +134,7 @@ public:
         std::lock_guard<std::mutex> lock(mutex_);
         AudioPlaybackStats stats = stats_;
         stats.enabled = options_.enabled;
-        stats.active = playbackStarted_;
+        stats.active = timing_.active();
         stats.sampleRate = sampleRate_;
         stats.channels = channels_;
         stats.queuedMs = queuedMsLocked();
@@ -198,10 +186,8 @@ private:
         sampleRate_ = obtained.freq;
         channels_ = obtained.channels;
         bytesPerSample_ = bytesPerSample;
-        queuedAudioEndSeconds_ = 0.0;
-        hasClock_ = false;
-        playbackStarted_ = options_.targetLatencyMs <= 0;
-        SDL_PauseAudioDevice(device_, playbackStarted_ ? 0 : 1);
+        timing_.resetForDevice();
+        SDL_PauseAudioDevice(device_, timing_.active() ? 0 : 1);
         SPDLOG_INFO("Audio playback opened: {} Hz, {} channels, target_latency_ms={}",
                     sampleRate_, channels_, options_.targetLatencyMs);
         return true;
@@ -228,29 +214,26 @@ private:
     }
 
     void maybeStartPlayback() {
-        if (device_ == 0 || playbackStarted_) {
+        if (device_ == 0 || timing_.active()) {
             return;
         }
 
         const uint32_t queuedMs = queuedMsLocked();
-        if (queuedMs < static_cast<uint32_t>(options_.targetLatencyMs)) {
+        if (!timing_.startIfReady(queuedMs)) {
             return;
         }
 
-        playbackStarted_ = true;
         SDL_PauseAudioDevice(device_, 0);
         SPDLOG_INFO("Audio playback started after prebuffer: queued={} ms", queuedMs);
     }
 
     AudioPlaybackOptions options_;
+    AudioPlaybackTiming timing_;
     mutable std::mutex mutex_;
     SDL_AudioDeviceID device_ = 0;
     int sampleRate_ = 0;
     int channels_ = 0;
     int bytesPerSample_ = 0;
-    double queuedAudioEndSeconds_ = 0.0;
-    bool hasClock_ = false;
-    bool playbackStarted_ = false;
     AudioPlaybackStats stats_{};
     std::chrono::steady_clock::time_point lastQueueWarningTime_{};
 };

@@ -1,5 +1,7 @@
 #pragma once
 
+#include "sync_controller.hpp"
+
 #include <cstdint>
 #include <array>
 #include <vector>
@@ -132,14 +134,8 @@ public:
     Stats getStats() const;
 
 private:
-    bool shouldRelease(const std::shared_ptr<MediaFrame>& frame) const;
-    void updateTargetLatency();
-
     size_t maxSize_;
-    uint32_t baseLatencyMs_;
-    uint32_t targetLatencyMs_;
-    uint32_t maxLatencyMs_;
-    bool adaptive_;
+    JitterBufferTiming timing_;
     std::deque<std::shared_ptr<MediaFrame>> buffer_;
 
     mutable std::mutex mutex_;
@@ -149,12 +145,6 @@ private:
     uint64_t overflowDroppedFrames_;
     uint64_t lateDroppedFrames_;
     uint64_t totalFrames_;
-    double lastPtsSeconds_;
-    double lastReleasedPtsSeconds_;
-    std::chrono::microseconds lastRecvTime_;
-    double jitterEstimateMs_;
-    bool hasLastArrival_;
-    bool hasLastRelease_;
 };
 
 } // namespace rtsp

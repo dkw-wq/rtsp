@@ -52,7 +52,7 @@ public:
     void resetBufferedFrames();
     void resetStats();
     void refreshStats();
-    void noteInputFrame();
+    void noteInputFrame(uint64_t count = 1);
     void updateInputFpsIfDue();
 
     std::shared_ptr<MediaFrame> pendingFrame;
