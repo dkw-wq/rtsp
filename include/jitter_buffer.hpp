@@ -42,6 +42,8 @@ struct MediaFrame {
     uint64_t pts;                      // 显示时间戳
     uint64_t dts;                      // 解码时间戳
     double ptsSeconds;                 // 秒级显示时间戳
+    std::optional<double> sourcePtsSeconds; // 未修正的原始 PTS（秒）
+    std::optional<double> referenceTimeSeconds; // RTCP/PRFT 映射的 Unix 时间（秒）
     double durationSeconds;            // 帧持续时间
     bool keyFrame;                     // 是否为关键帧
     std::chrono::microseconds recvTime; // 接收时间

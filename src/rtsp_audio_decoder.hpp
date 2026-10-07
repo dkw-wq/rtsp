@@ -57,6 +57,7 @@ private:
     std::mutex audioMutex_;
     std::condition_variable audioCv_;
     std::queue<AVPacket*> audioPacketQueue_;
+    SenderClockMapper senderClock_;
 };
 
 } // namespace rtsp

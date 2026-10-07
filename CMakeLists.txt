@@ -236,5 +236,26 @@ target_link_libraries(rtsp_unit_tests
 )
 add_test(NAME rtsp_unit_tests COMMAND rtsp_unit_tests)
 
+add_executable(rtsp_sync_probe EXCLUDE_FROM_ALL
+    tools/rtsp_sync_probe.cpp
+    src/rtsp_client.cpp
+    src/rtsp_audio_decoder.cpp
+    src/rtsp_ffmpeg_utils.cpp
+    src/rtsp_frame_converter.cpp
+    src/rtsp_hardware_decoder.cpp
+    src/rtsp_recorder.cpp
+    src/frame_capture.cpp
+    src/jitter_buffer.cpp
+    src/audio_player.cpp
+    src/sync_controller.cpp
+)
+target_compile_definitions(rtsp_sync_probe PRIVATE SDL_MAIN_HANDLED)
+target_link_directories(rtsp_sync_probe PRIVATE ${FFMPEG_LIBRARY_DIRS})
+target_link_libraries(rtsp_sync_probe PRIVATE
+    Threads::Threads ${FFMPEG_LIBRARIES}
+    $<IF:$<TARGET_EXISTS:SDL2::SDL2>,SDL2::SDL2,SDL2::SDL2-static>
+    spdlog::spdlog
+)
+
 # Install target
 install(TARGETS rtsp_player DESTINATION bin)

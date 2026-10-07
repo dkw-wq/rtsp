@@ -506,6 +506,8 @@ bool VulkanVideoRenderer::transferCudaFrameToCpuNv12(const MediaFrame& frame,
     cpuFrame.pts = frame.pts;
     cpuFrame.dts = frame.dts;
     cpuFrame.ptsSeconds = frame.ptsSeconds;
+    cpuFrame.sourcePtsSeconds = frame.sourcePtsSeconds;
+    cpuFrame.referenceTimeSeconds = frame.referenceTimeSeconds;
     cpuFrame.durationSeconds = frame.durationSeconds;
     cpuFrame.keyFrame = frame.keyFrame;
 

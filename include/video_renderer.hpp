@@ -26,6 +26,7 @@ struct PlaybackStats {
     int32_t avSyncDiffMs = 0;
     uint32_t audioQueueMs = 0;
     bool audioActive = false;
+    bool timestampSyncActive = false;
     std::string decoderBackend = "CPU";
     std::string hardwareDecodeStatus = "OFF";
 };

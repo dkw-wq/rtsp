@@ -85,7 +85,9 @@ public:
                 ? frame->durationSeconds
                 : bytesToSeconds(static_cast<uint32_t>(frame->data.size()),
                                  sampleRate_, channels_, bytesPerSample_);
-        timing_.noteQueuedFrame(frame->ptsSeconds, duration);
+        timing_.noteQueuedFrame(frame->ptsSeconds, duration, frame->referenceTimeSeconds);
+        timing_.trimPlayedFrames(bytesToSeconds(SDL_GetQueuedAudioSize(device_),
+                                                sampleRate_, channels_, bytesPerSample_));
         ++stats_.playedFrames;
         stats_.queuedMs = queuedMsLocked();
         maybeStartPlayback();
@@ -123,6 +125,20 @@ public:
         const uint32_t queuedBytes = SDL_GetQueuedAudioSize(device_);
         return timing_.clockSeconds(
             bytesToSeconds(queuedBytes, sampleRate_, channels_, bytesPerSample_));
+    }
+
+    AudioClockSnapshot clockSnapshot() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        AudioClockSnapshot snapshot;
+        snapshot.available = device_ != 0 && timing_.hasClock();
+        snapshot.active = device_ != 0 && timing_.active();
+        if (snapshot.available) {
+            const double queuedSeconds = bytesToSeconds(SDL_GetQueuedAudioSize(device_),
+                                                         sampleRate_, channels_, bytesPerSample_);
+            snapshot.ptsSeconds = timing_.clockSeconds(queuedSeconds);
+            snapshot.referenceTimeSeconds = timing_.referenceClockSeconds(queuedSeconds);
+        }
+        return snapshot;
     }
 
     uint32_t queuedMs() const {
@@ -258,6 +274,10 @@ bool AudioPlayer::hasClock() const {
 
 double AudioPlayer::clockSeconds() const {
     return pImpl_->clockSeconds();
+}
+
+AudioClockSnapshot AudioPlayer::clockSnapshot() const {
+    return pImpl_->clockSnapshot();
 }
 
 uint32_t AudioPlayer::queuedMs() const {

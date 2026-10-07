@@ -161,14 +161,26 @@ audio:
 
 sync:
   enabled: true
+  mode: timestamp  # timestamp 或 receive_time
   max_wait_ms: 16
   late_drop_ms: 250
   audio_offset_ms: 0
 ```
 
-单路播放时，视频以音频时钟为主时钟：视频早到会短暂等待，晚到超过 `late_drop_ms` 会丢帧追赶；没有音频时钟时，按视频 PTS 与本地单调时钟调度。
+默认 `mode: timestamp`：从 FFmpeg 包的 PRFT（由 RTCP Sender Report 映射得到的 Unix 时间）建立每路原始 PTS 到共同时间的映射，随解码帧保留；所有有映射的视频流都与音频实际队列头的共同时间比较。视频超前会等待，落后超过 `late_drop_ms` 会丢帧追赶，某一路等待时其他路仍可更新。音频重采样会扣除缓冲样本对应的时长，音频重连/队列硬重置与视频重连都会清除旧时序状态。
 
-多路播放时，仅第一路视频在音频时钟可用时按“接收时间 + 音频目标延迟 + `audio_offset_ms`”等待或丢帧追赶，其余视频由各自的 jitter buffer 释放。这是第一路视频的延迟补偿，不提供多摄像头时间轴对齐。`audio_offset_ms` 当前仅作用于多路模式，正数让视频晚显示，负数让视频早显示，合计延迟最低为 0。
+时间戳模式不使用 `audio_offset_ms`，无需沿用原有的 700 ms 固定补偿。缺少任一侧的共同时间映射时，多路视频独立显示；日志中的 `sender clock mapped from RTCP/PRFT` 表示取得映射，`timestamp A/V sync active` 和 overlay 的 `AV DIFF ... TS` 表示正在使用共同时间同步。同步精度取决于源端/服务器的 RTCP 时钟映射是否准确代表媒体采集时刻，接收时间不能替代采集时间。
+
+`mode: receive_time` 保留旧的多路延迟补偿模式，仅第一路视频按“接收时间 + 音频目标延迟 + `audio_offset_ms`”调度；正偏移让视频晚显示，合计延迟最低为 0。单路在共同时间可用时也使用时间戳同步，否则继续按相对 PTS/音频时钟或本地单调时钟调度。
+
+从项目根目录启动双摄像头和独立音频（`audio.enabled: true`，`audio_rtsp_url: rtsp://127.0.0.1:8554/audio`）：
+
+```powershell
+.\scripts\start_webcam_rtsp.ps1 -Dual
+.\build-vcpkg\bin\Release\rtsp_player.exe --timestamp-sync rtsp://127.0.0.1:8554/webcam rtsp://127.0.0.1:8554/webcam2
+```
+
+`--timestamp-sync` 只为本次启动启用时间戳同步，无需修改配置中标记为手工修改的同步开关。
 
 ### Jitter Buffer
 
@@ -371,6 +383,14 @@ Get-Process rtsp_player -ErrorAction SilentlyContinue | Stop-Process -Force
 ```powershell
 ctest --preset windows-vcpkg-release
 ```
+
+验证三路独立 RTSP 的共同时间同步（隔离端口 18554，使用两路合成视频、一路合成音频和 SDL 虚拟音频设备，不打开摄像头或播放声音）：
+
+```powershell
+.\scripts\test_timestamp_sync.ps1
+```
+
+脚本会构建 `rtsp_sync_probe`，检查实际解复用/解码后的参考时间、44.1 kHz 音频转 48 kHz 后的时序与第二路重连后重新建立映射，结束时停止它启动的测试服务和推流进程。运行日志位于 `build-vcpkg/sync-integration`。
 
 构建 ONNX CUDA provider 探针：
 

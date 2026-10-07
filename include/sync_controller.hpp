@@ -4,6 +4,10 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <optional>
+#include <deque>
+
+struct AVPacket;
 
 namespace rtsp {
 
@@ -14,11 +18,34 @@ struct AudioPlaybackStats;
 struct MediaFrame;
 struct PlaybackStats;
 
+enum class SyncMode { Timestamp, ReceiveTime };
+
 struct SyncOptions {
     bool enabled = true;
     int maxWaitMs = 16;
     int lateDropMs = 250;
     int audioOffsetMs = 0;
+    SyncMode mode = SyncMode::Timestamp;
+};
+
+struct AudioClockSnapshot {
+    bool available = false;
+    bool active = false;
+    double ptsSeconds = 0.0;
+    std::optional<double> referenceTimeSeconds;
+};
+
+// PRFT is FFmpeg's per-packet Unix time reconstructed from RTCP sender reports.
+class SenderClockMapper {
+public:
+    void reset();
+    bool observePacket(const AVPacket& packet, double secondsPerTick);
+    bool hasMapping() const;
+    std::optional<double> referenceTime(double sourcePtsSeconds) const;
+
+private:
+    std::optional<double> anchorPtsSeconds_;
+    double anchorReferenceSeconds_ = 0.0;
 };
 
 struct SyncDecision {
@@ -45,7 +72,10 @@ public:
     void resetForDevice();
     bool shouldResetQueue(uint32_t queuedMs) const;
     void resetQueue(double ptsSeconds);
-    void noteQueuedFrame(double ptsSeconds, double durationSeconds);
+    void noteQueuedFrame(double ptsSeconds, double durationSeconds,
+                         std::optional<double> referenceTimeSeconds = std::nullopt);
+    void trimPlayedFrames(double queuedSeconds);
+    std::optional<double> referenceClockSeconds(double queuedSeconds) const;
     bool startIfReady(uint32_t queuedMs);
     bool active() const;
     bool hasClock() const;
@@ -57,6 +87,11 @@ private:
     double queuedAudioEndSeconds_ = 0.0;
     bool hasClock_ = false;
     bool playbackStarted_ = false;
+    struct AudioSegment {
+        double durationSeconds;
+        std::optional<double> referenceTimeSeconds;
+    };
+    std::deque<AudioSegment> segments_;
 };
 
 class VideoTimestampTracker {
@@ -126,7 +161,7 @@ private:
     std::chrono::steady_clock::time_point wallBaseTime_{};
 };
 
-// Multi-stream playback aligns only the primary video to the audio receive delay.
+// Timestamp mode aligns every mapped video stream to the actual audio queue head.
 class MultiStreamSyncController {
 public:
     MultiStreamSyncController(SyncOptions options, int audioTargetLatencyMs);
@@ -134,7 +169,7 @@ public:
     SyncDecision synchronize(size_t streamIndex,
                              std::shared_ptr<MediaFrame>& pendingVideoFrame,
                              JitterBuffer& jitterBuffer,
-                             bool hasAudioClock,
+                             const AudioClockSnapshot& audioClock,
                              PlaybackStats& playbackStats) const;
 
 private:

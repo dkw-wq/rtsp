@@ -6,10 +6,54 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
+#include <limits>
+
+extern "C" {
+#include <libavcodec/defs.h>
+#include <libavcodec/packet.h>
+#include <libavutil/avutil.h>
+}
 
 #include <spdlog/spdlog.h>
 
 namespace rtsp {
+
+void SenderClockMapper::reset() {
+    anchorPtsSeconds_.reset();
+    anchorReferenceSeconds_ = 0.0;
+}
+
+bool SenderClockMapper::observePacket(const AVPacket& packet, double secondsPerTick) {
+    if (packet.pts == AV_NOPTS_VALUE || !std::isfinite(secondsPerTick) || secondsPerTick <= 0.0) {
+        return false;
+    }
+    size_t size = 0;
+    const auto* data = av_packet_get_side_data(&packet, AV_PKT_DATA_PRFT, &size);
+    if (data == nullptr || size < sizeof(AVProducerReferenceTime)) {
+        return false;
+    }
+    AVProducerReferenceTime reference{};
+    std::memcpy(&reference, data, sizeof(reference));
+    const double ptsSeconds = static_cast<double>(packet.pts) * secondsPerTick;
+    if (reference.wallclock <= 0 || !std::isfinite(ptsSeconds)) {
+        return false;
+    }
+    anchorPtsSeconds_ = ptsSeconds;
+    anchorReferenceSeconds_ = static_cast<double>(reference.wallclock) / 1'000'000.0;
+    return true;
+}
+
+bool SenderClockMapper::hasMapping() const {
+    return anchorPtsSeconds_.has_value();
+}
+
+std::optional<double> SenderClockMapper::referenceTime(double sourcePtsSeconds) const {
+    if (!anchorPtsSeconds_ || !std::isfinite(sourcePtsSeconds)) {
+        return std::nullopt;
+    }
+    return anchorReferenceSeconds_ + (sourcePtsSeconds - *anchorPtsSeconds_);
+}
 
 AudioPlaybackOptions normalizeAudioPlaybackOptions(AudioPlaybackOptions options) {
     options.targetLatencyMs = std::clamp(options.targetLatencyMs, 0, 5000);
@@ -29,6 +73,7 @@ void AudioPlaybackTiming::reset() {
     queuedAudioEndSeconds_ = 0.0;
     hasClock_ = false;
     playbackStarted_ = false;
+    segments_.clear();
 }
 
 void AudioPlaybackTiming::resetForDevice() {
@@ -43,11 +88,50 @@ bool AudioPlaybackTiming::shouldResetQueue(uint32_t queuedMs) const {
 void AudioPlaybackTiming::resetQueue(double ptsSeconds) {
     queuedAudioEndSeconds_ = ptsSeconds;
     playbackStarted_ = true;
+    segments_.clear();
 }
 
-void AudioPlaybackTiming::noteQueuedFrame(double ptsSeconds, double durationSeconds) {
+void AudioPlaybackTiming::noteQueuedFrame(double ptsSeconds, double durationSeconds,
+                                         std::optional<double> referenceTimeSeconds) {
     queuedAudioEndSeconds_ = std::max(queuedAudioEndSeconds_, ptsSeconds + durationSeconds);
     hasClock_ = true;
+    if (durationSeconds > 0.0 && std::isfinite(durationSeconds)) {
+        if (referenceTimeSeconds && !std::isfinite(*referenceTimeSeconds)) {
+            referenceTimeSeconds.reset();
+        }
+        segments_.push_back({durationSeconds, referenceTimeSeconds});
+    }
+}
+
+void AudioPlaybackTiming::trimPlayedFrames(double queuedSeconds) {
+    double totalSeconds = 0.0;
+    for (const auto& segment : segments_) {
+        totalSeconds += segment.durationSeconds;
+    }
+    while (segments_.size() > 1 &&
+           totalSeconds - segments_.front().durationSeconds >= queuedSeconds) {
+        totalSeconds -= segments_.front().durationSeconds;
+        segments_.pop_front();
+    }
+}
+
+std::optional<double> AudioPlaybackTiming::referenceClockSeconds(double queuedSeconds) const {
+    if (!playbackStarted_ || !hasClock_ || !std::isfinite(queuedSeconds) || queuedSeconds < 0.0) {
+        return std::nullopt;
+    }
+    double remaining = queuedSeconds;
+    for (auto segment = segments_.rbegin(); segment != segments_.rend(); ++segment) {
+        if (remaining > segment->durationSeconds + 1e-6) {
+            remaining -= segment->durationSeconds;
+            continue;
+        }
+        if (!segment->referenceTimeSeconds) {
+            return std::nullopt;
+        }
+        return *segment->referenceTimeSeconds +
+               std::max(0.0, segment->durationSeconds - remaining);
+    }
+    return std::nullopt;
 }
 
 bool AudioPlaybackTiming::startIfReady(uint32_t queuedMs) {
@@ -191,6 +275,60 @@ void updateFrameLatency(const std::shared_ptr<MediaFrame>& currentFrame,
 
 namespace {
 
+int32_t syncDiffForStats(double diffMs) {
+    return static_cast<int32_t>(std::clamp(std::round(diffMs),
+        static_cast<double>(std::numeric_limits<int32_t>::min()),
+        static_cast<double>(std::numeric_limits<int32_t>::max())));
+}
+
+SyncDecision synchronizeReferenceTime(std::shared_ptr<MediaFrame>& pending,
+                                      JitterBuffer& buffer,
+                                      const AudioClockSnapshot& audioClock,
+                                      const SyncOptions& options,
+                                      PlaybackStats& stats) {
+    stats.timestampSyncActive = false;
+    stats.avSyncDiffMs = 0;
+    if (!pending || !audioClock.available || !audioClock.active ||
+        !audioClock.referenceTimeSeconds || !pending->referenceTimeSeconds) {
+        return {};
+    }
+
+    stats.timestampSyncActive = true;
+    uint64_t catchUpFrames = 0;
+    while (pending && pending->referenceTimeSeconds) {
+        const double diffMs =
+            (*pending->referenceTimeSeconds - *audioClock.referenceTimeSeconds) * 1000.0;
+        if (!std::isfinite(diffMs)) {
+            stats.timestampSyncActive = false;
+            return {SyncDecision::Type::Render, 0, catchUpFrames};
+        }
+        stats.avSyncDiffMs = syncDiffForStats(diffMs);
+        if (options.lateDropMs > 0 && diffMs < -static_cast<double>(options.lateDropMs)) {
+            ++stats.syncDroppedFrames;
+            std::shared_ptr<MediaFrame> nextFrame;
+            if (!buffer.pop(nextFrame, 0)) {
+                pending.reset();
+                return {SyncDecision::Type::WaitingForNewerFrame, 0, catchUpFrames};
+            }
+            pending = nextFrame;
+            ++catchUpFrames;
+            updateFrameLatency(pending, stats);
+            continue;
+        }
+        if (diffMs > 1.0 && options.maxWaitMs > 0) {
+            // Clamp before converting: a different clock domain can be hours away.
+            const int waitMs = static_cast<int>(std::clamp(
+                std::ceil(diffMs), 1.0, static_cast<double>(options.maxWaitMs)));
+            return {SyncDecision::Type::Wait, waitMs, catchUpFrames};
+        }
+        return {SyncDecision::Type::Render, 0, catchUpFrames};
+    }
+    // A replacement without a sender mapping is displayed independently.
+    stats.timestampSyncActive = false;
+    stats.avSyncDiffMs = 0;
+    return {SyncDecision::Type::Render, 0, catchUpFrames};
+}
+
 std::chrono::steady_clock::time_point frameTargetTimeByReceiveTime(
     const std::shared_ptr<MediaFrame>& frame,
     int targetDelayMs) {
@@ -234,6 +372,7 @@ SyncDecision SingleStreamSyncController::synchronize(
     playbackStats.audioActive = audioStats.active;
     playbackStats.audioQueueMs = audioStats.queuedMs;
     playbackStats.audioDroppedFrames = audioStats.droppedFrames;
+    playbackStats.timestampSyncActive = false;
     uint64_t catchUpFrames = 0;
 
     if (shouldHoldForAudioStartup(audioStats)) {
@@ -247,9 +386,20 @@ SyncDecision SingleStreamSyncController::synchronize(
         return {SyncDecision::Type::Wait, 5};
     }
 
+    const auto audioClockSnapshot = audioPlayer.clockSnapshot();
+    if (options_.enabled && options_.mode == SyncMode::Timestamp &&
+        frame->referenceTimeSeconds && audioClockSnapshot.referenceTimeSeconds) {
+        playbackStats.syncDroppedFrames = droppedFrames_;
+        const auto decision = synchronizeReferenceTime(
+            pendingVideoFrame, jitterBuffer, audioClockSnapshot, options_, playbackStats);
+        droppedFrames_ = playbackStats.syncDroppedFrames;
+        frame = pendingVideoFrame;
+        return decision;
+    }
+
     if (!options_.enabled || frame->ptsSeconds <= 0.0) {
         playbackStats.avSyncDiffMs = 0;
-        if (!options_.enabled || !audioPlayer.hasClock()) {
+        if (!options_.enabled || !audioClockSnapshot.available) {
             initialized_ = false;
             audioBaseInitialized_ = false;
         }
@@ -269,8 +419,8 @@ SyncDecision SingleStreamSyncController::synchronize(
     double videoDelayMs =
         ((frame->ptsSeconds - videoBaseSeconds_) - wallElapsedSeconds) * 1000.0;
 
-    if (audioPlayer.hasClock()) {
-        const double audioClock = audioPlayer.clockSeconds();
+    if (audioClockSnapshot.available) {
+        const double audioClock = audioClockSnapshot.ptsSeconds;
         if (!audioBaseInitialized_) {
             audioBaseInitialized_ = true;
             audioBaseSeconds_ = audioClock;
@@ -358,9 +508,25 @@ SyncDecision MultiStreamSyncController::synchronize(
     size_t streamIndex,
     std::shared_ptr<MediaFrame>& pendingVideoFrame,
     JitterBuffer& jitterBuffer,
-    bool hasAudioClock,
+    const AudioClockSnapshot& audioClock,
     PlaybackStats& playbackStats) const {
-    if (streamIndex != 0 || !options_.enabled || !hasAudioClock) {
+    const bool wasTimestampSyncActive = playbackStats.timestampSyncActive;
+    playbackStats.timestampSyncActive = false;
+    if (!options_.enabled) {
+        playbackStats.avSyncDiffMs = 0;
+        return {};
+    }
+    if (options_.mode == SyncMode::Timestamp) {
+        const auto decision = synchronizeReferenceTime(
+            pendingVideoFrame, jitterBuffer, audioClock, options_, playbackStats);
+        if (playbackStats.timestampSyncActive != wasTimestampSyncActive) {
+            SPDLOG_INFO("Stream {} timestamp A/V sync {}", streamIndex + 1,
+                        playbackStats.timestampSyncActive ? "active" : "unavailable; rendering independently");
+        }
+        return decision;
+    }
+    if (streamIndex != 0 || !audioClock.available) {
+        playbackStats.avSyncDiffMs = 0;
         return {};
     }
 

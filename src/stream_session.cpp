@@ -11,6 +11,7 @@ namespace rtsp {
 
 StreamSession::StreamSession(StreamSessionOptions options)
     : options_(std::move(options))
+    , forwardAudioToPlayer_(options_.forwardAudioToPlayer)
     , client_(std::make_unique<RtspClient>())
     , jitterBuffer_(std::make_unique<JitterBuffer>(
           options_.jitterMaxSize, options_.jitterLatencyMs,
@@ -28,7 +29,8 @@ StreamSession::StreamSession(StreamSessionOptions options)
         }
 
         if (frame->type == MediaFrame::Type::AUDIO) {
-            if (options_.forwardAudioToPlayer && options_.audioPlayer) {
+            std::lock_guard<std::mutex> lock(audioForwardMutex_);
+            if (forwardAudioToPlayer_ && options_.audioPlayer) {
                 options_.audioPlayer->pushFrame(frame);
             }
             return;
@@ -74,7 +76,9 @@ bool StreamSession::isRunning() const {
 }
 
 void StreamSession::setForwardAudioToPlayer(bool enabled) {
-    options_.forwardAudioToPlayer = enabled;
+    // Disabling waits for any in-flight push before the player resets/switches clocks.
+    std::lock_guard<std::mutex> lock(audioForwardMutex_);
+    forwardAudioToPlayer_ = enabled;
 }
 
 RtspClient& StreamSession::client() {

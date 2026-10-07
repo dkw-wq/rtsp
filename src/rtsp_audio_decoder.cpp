@@ -45,6 +45,7 @@ bool RtspAudioDecoder::open(AVFormatContext* formatContext, int audioStream) {
     if (audioCodecContext_->ch_layout.nb_channels <= 0) {
         av_channel_layout_default(&audioCodecContext_->ch_layout, 2);
     }
+    audioCodecContext_->pkt_timebase = formatContext->streams[audioStream]->time_base;
 
     ret = avcodec_open2(audioCodecContext_, codec, nullptr);
     if (ret < 0) {
@@ -103,6 +104,7 @@ void RtspAudioDecoder::close() {
     audioStream_ = -1;
     running_ = nullptr;
     frameCallback_ = nullptr;
+    senderClock_.reset();
 }
 
 bool RtspAudioDecoder::isOpen() const {
@@ -187,6 +189,15 @@ bool RtspAudioDecoder::fillAudioFrame(const AVFrame* sourceFrame, MediaFrame& me
     mediaFrame.pts = ffmpeg::normalizedTimestamp(sourceFrame);
     mediaFrame.ptsSeconds =
         ffmpeg::timestampSeconds(formatContext_, sourceFrame, audioStream_);
+    double sourcePtsSeconds = 0.0;
+    if (ffmpeg::frameTimestampSeconds(formatContext_, sourceFrame, audioStream_, sourcePtsSeconds)) {
+        mediaFrame.sourcePtsSeconds = sourcePtsSeconds;
+        mediaFrame.referenceTimeSeconds = senderClock_.referenceTime(sourcePtsSeconds);
+        if (mediaFrame.referenceTimeSeconds && sourceRate > 0) {
+            // The first output sample can precede this input frame due to resampler buffering.
+            *mediaFrame.referenceTimeSeconds -= static_cast<double>(delay) / sourceRate;
+        }
+    }
     mediaFrame.data.resize(static_cast<size_t>(outputSamples) *
                            static_cast<size_t>(kOutputAudioChannels) *
                            static_cast<size_t>(kOutputAudioBytesPerSample));
@@ -243,6 +254,11 @@ void RtspAudioDecoder::decodeLoop() {
             continue;
         }
 
+        const bool hadMapping = senderClock_.hasMapping();
+        if (senderClock_.observePacket(
+                *packet, av_q2d(formatContext_->streams[audioStream_]->time_base)) && !hadMapping) {
+            SPDLOG_INFO("Audio sender clock mapped from RTCP/PRFT");
+        }
         int ret = avcodec_send_packet(audioCodecContext_, packet);
         av_packet_free(&packet);
         if (ret < 0) {

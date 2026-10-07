@@ -114,6 +114,7 @@ public:
             videoFrameDurationSeconds_ =
                 ffmpeg::streamFrameDurationSeconds(formatContext_, videoStream_);
             videoTimestamps_.reset();
+            videoSenderClock_.reset();
             waitingForVideoKeyframe_ = true;
             videoStarted_ = false;
 
@@ -245,6 +246,7 @@ public:
         videoStream_ = -1;
         audioStream_ = -1;
         videoTimestamps_.reset();
+        videoSenderClock_.reset();
         waitingForVideoKeyframe_ = true;
         videoStarted_ = false;
         width_ = 0;
@@ -425,6 +427,11 @@ private:
             lastReadProgress = std::chrono::steady_clock::now();
 
             if (videoEnabled_ && packet->stream_index == videoStream_ && codecContext_ != nullptr) {
+                const bool hadMapping = videoSenderClock_.hasMapping();
+                if (videoSenderClock_.observePacket(
+                        *packet, av_q2d(formatContext_->streams[videoStream_]->time_base)) && !hadMapping) {
+                    SPDLOG_INFO("Video sender clock mapped from RTCP/PRFT");
+                }
                 if (waitingForVideoKeyframe_) {
                     if ((packet->flags & AV_PKT_FLAG_KEY) == 0) {
                         av_packet_unref(packet);
@@ -477,9 +484,14 @@ private:
                         mediaFrame->type = MediaFrame::Type::VIDEO;
                         mediaFrame->width = outputFrame->width;
                         mediaFrame->height = outputFrame->height;
-                        mediaFrame->pts = ffmpeg::normalizedTimestamp(outputFrame);
-                        mediaFrame->dts = outputFrame->pkt_dts;
-                        mediaFrame->ptsSeconds = stableVideoTimestampSeconds(outputFrame);
+                        mediaFrame->pts = ffmpeg::normalizedTimestamp(frame);
+                        mediaFrame->dts = frame->pkt_dts;
+                        mediaFrame->ptsSeconds = stableVideoTimestampSeconds(frame);
+                        double sourcePtsSeconds = 0.0;
+                        if (ffmpeg::frameTimestampSeconds(formatContext_, frame, videoStream_, sourcePtsSeconds)) {
+                            mediaFrame->sourcePtsSeconds = sourcePtsSeconds;
+                            mediaFrame->referenceTimeSeconds = videoSenderClock_.referenceTime(sourcePtsSeconds);
+                        }
                         mediaFrame->durationSeconds = videoFrameDurationSeconds_;
                         mediaFrame->keyFrame = (outputFrame->flags & AV_FRAME_FLAG_KEY) != 0;
                         mediaFrame->recvTime = ffmpeg::steadyNowMicros();
@@ -564,6 +576,7 @@ private:
     int audioStream_;
     double videoFrameDurationSeconds_;
     VideoTimestampTracker videoTimestamps_;
+    SenderClockMapper videoSenderClock_;
     bool hardwareFrameOutputEnabled_;
     bool audioEnabled_;
     bool videoEnabled_;

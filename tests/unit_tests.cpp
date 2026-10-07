@@ -10,6 +10,8 @@
 #include <array>
 #include <chrono>
 #include <cmath>
+#include <cstring>
+#include <limits>
 #include <cstdlib>
 #include <exception>
 #include <filesystem>
@@ -623,11 +625,14 @@ void testAudioPlayerAndSingleStreamSyncIntegration() {
     audio->channels = 2;
     audio->bytesPerSample = 2;
     audio->ptsSeconds = 20.0;
+    audio->referenceTimeSeconds = 1700000000.0;
     audio->data.resize(960 * 2 * 2); // 20 ms, also exercises duration calculation from PCM bytes.
     require(audioPlayer.pushFrame(audio), "dummy device should accept the first audio frame");
     require(audioPlayer.hasClock() && !audioPlayer.getStats().active &&
                 std::abs(audioPlayer.clockSeconds() - 20.0) < 1e-9,
             "prebuffered audio should expose its clock while the device remains paused");
+    require(!audioPlayer.clockSnapshot().referenceTimeSeconds,
+            "paused audio must not expose a common playback clock");
 
     rtsp::SingleStreamSyncController sync;
     rtsp::JitterBuffer buffer(4, 0);
@@ -641,8 +646,24 @@ void testAudioPlayerAndSingleStreamSyncIntegration() {
             "video should discard ready stale frames while audio is still prebuffering");
 
     audio->ptsSeconds = 20.02;
+    audio->referenceTimeSeconds = 1700000000.02;
     require(audioPlayer.pushFrame(audio) && audioPlayer.getStats().active,
             "reaching the prebuffer target should start the audio device");
+    const auto referenceClock = audioPlayer.clockSnapshot();
+    require(referenceClock.active && referenceClock.referenceTimeSeconds &&
+                *referenceClock.referenceTimeSeconds >= 1700000000.0 &&
+                *referenceClock.referenceTimeSeconds <= 1700000000.041,
+            "audio player snapshot must publish the common time of the actual queue head");
+    rtsp::SingleStreamSyncController referenceSync;
+    auto referencePending = makeVideoFrame(11.0);
+    referencePending->referenceTimeSeconds = 1700000001.0;
+    auto referenceFrame = referencePending;
+    rtsp::PlaybackStats referenceStats;
+    const auto referenceDecision = referenceSync.synchronize(
+        referenceFrame, referencePending, buffer, audioPlayer, referenceStats);
+    require(referenceDecision.type == rtsp::SyncDecision::Type::Wait &&
+                referenceStats.timestampSyncActive && referenceStats.avSyncDiffMs > 900,
+            "single-stream common sync must preserve the real startup offset instead of zeroing both origins");
     pending = makeVideoFrame(11.0);
     frame = pending;
     decision = sync.synchronize(frame, pending, buffer, audioPlayer, stats);
@@ -664,6 +685,8 @@ void testAudioPlayerAndSingleStreamSyncIntegration() {
     sync.reset();
     require(!audioPlayer.hasClock() && !audioPlayer.getStats().active,
             "audio reset should clear the published clock and playback state");
+    require(!audioPlayer.clockSnapshot().referenceTimeSeconds,
+            "audio reset must discard all common reference segments");
     pending = makeVideoFrame(50.0);
     frame = pending;
     decision = sync.synchronize(frame, pending, buffer, audioPlayer, stats);
@@ -671,8 +694,13 @@ void testAudioPlayerAndSingleStreamSyncIntegration() {
             "reconnect should establish a fresh video-only base and reset dropped-frame counts");
 }
 
+rtsp::AudioClockSnapshot legacyAudioClock(bool available) {
+    return {available, available, 0.0, std::nullopt};
+}
+
 void testMultiStreamSyncWaitAndOffset() {
     rtsp::SyncOptions options;
+    options.mode = rtsp::SyncMode::ReceiveTime;
     options.maxWaitMs = 12;
     options.audioOffsetMs = 2000;
     rtsp::MultiStreamSyncController sync(options, 100);
@@ -680,26 +708,27 @@ void testMultiStreamSyncWaitAndOffset() {
     rtsp::PlaybackStats stats;
     auto pending = makeVideoFrame(10.0, false, 1000);
     const auto original = pending;
-    const auto decision = sync.synchronize(0, pending, buffer, true, stats);
+    const auto decision = sync.synchronize(0, pending, buffer, legacyAudioClock(true), stats);
     require(decision.type == rtsp::SyncDecision::Type::Wait && decision.waitMs == 12 &&
                 stats.avSyncDiffMs == 12 && pending == original && decision.catchUpFrames == 0,
             "primary video should honor positive offset and keep its pending frame while waiting");
 
     options.maxWaitMs = 0;
     rtsp::MultiStreamSyncController minimumWait(options, 100);
-    require(minimumWait.synchronize(0, pending, buffer, true, stats).waitMs == 1,
+    require(minimumWait.synchronize(0, pending, buffer, legacyAudioClock(true), stats).waitMs == 1,
             "multi-stream mode should retain its minimum one-millisecond wait");
 
     options.audioOffsetMs = -1500;
     rtsp::MultiStreamSyncController negativeOffset(options, 1000);
     pending = makeVideoFrame(10.0);
-    require(negativeOffset.synchronize(0, pending, buffer, true, stats).type ==
+    require(negativeOffset.synchronize(0, pending, buffer, legacyAudioClock(true), stats).type ==
                 rtsp::SyncDecision::Type::Render && stats.syncDroppedFrames == 0,
             "negative offset should clamp total receive delay to zero instead of dropping a new frame");
 }
 
 void testMultiStreamSyncBypassAndOnTimeFrames() {
     rtsp::SyncOptions options;
+    options.mode = rtsp::SyncMode::ReceiveTime;
     options.lateDropMs = 5000;
     rtsp::MultiStreamSyncController sync(options, 10000);
     rtsp::JitterBuffer buffer(4, 0);
@@ -708,13 +737,13 @@ void testMultiStreamSyncBypassAndOnTimeFrames() {
     const auto original = pending;
     const auto queued = makeVideoFrame(2.0);
     buffer.push(queued);
-    require(sync.synchronize(1, pending, buffer, true, stats).type == rtsp::SyncDecision::Type::Render,
+    require(sync.synchronize(1, pending, buffer, legacyAudioClock(true), stats).type == rtsp::SyncDecision::Type::Render,
             "secondary video should bypass the primary audio delay");
-    require(sync.synchronize(0, pending, buffer, false, stats).type == rtsp::SyncDecision::Type::Render,
+    require(sync.synchronize(0, pending, buffer, legacyAudioClock(false), stats).type == rtsp::SyncDecision::Type::Render,
             "primary video should bypass delay while the audio clock is unavailable");
     options.enabled = false;
     rtsp::MultiStreamSyncController disabled(options, 10000);
-    require(disabled.synchronize(0, pending, buffer, true, stats).type == rtsp::SyncDecision::Type::Render &&
+    require(disabled.synchronize(0, pending, buffer, legacyAudioClock(true), stats).type == rtsp::SyncDecision::Type::Render &&
                 pending == original && buffer.size() == 1 && stats.syncDroppedFrames == 0,
             "disabled synchronization should retain both pending and queued frames");
 
@@ -722,7 +751,7 @@ void testMultiStreamSyncBypassAndOnTimeFrames() {
     rtsp::MultiStreamSyncController onTime(options, 30);
     pending = makeVideoFrame(1.0, false, 100);
     const auto onTimeFrame = pending;
-    const auto decision = onTime.synchronize(0, pending, buffer, true, stats);
+    const auto decision = onTime.synchronize(0, pending, buffer, legacyAudioClock(true), stats);
     require(decision.type == rtsp::SyncDecision::Type::Render && pending == onTimeFrame &&
                 decision.catchUpFrames == 0 && buffer.size() == 1,
             "an on-time pending frame should render without draining other ready frames");
@@ -730,6 +759,7 @@ void testMultiStreamSyncBypassAndOnTimeFrames() {
 
 void testMultiStreamSyncCatchesUpUntilDeadline() {
     rtsp::SyncOptions options;
+    options.mode = rtsp::SyncMode::ReceiveTime;
     options.lateDropMs = 500;
     rtsp::MultiStreamSyncController sync(options, 50);
     rtsp::JitterBuffer buffer(4, 0);
@@ -740,7 +770,7 @@ void testMultiStreamSyncCatchesUpUntilDeadline() {
     const auto catchUp = makeVideoFrame(3.0, false, 100);
     buffer.push(catchUp);
     buffer.push(makeVideoFrame(4.0, false, 100));
-    const auto decision = sync.synchronize(0, pending, buffer, true, stats);
+    const auto decision = sync.synchronize(0, pending, buffer, legacyAudioClock(true), stats);
     require(decision.type == rtsp::SyncDecision::Type::Render && pending == catchUp &&
                 decision.catchUpFrames == 2 && stats.syncDroppedFrames == 9 && buffer.size() == 1,
             "catch-up should stop at the first on-time frame and count every consumed replacement");
@@ -748,13 +778,14 @@ void testMultiStreamSyncCatchesUpUntilDeadline() {
 
 void testMultiStreamSyncWaitsForReadyReplacement() {
     rtsp::SyncOptions options;
+    options.mode = rtsp::SyncMode::ReceiveTime;
     options.lateDropMs = 500;
     rtsp::MultiStreamSyncController sync(options, 50);
     rtsp::JitterBuffer buffer(4, 0);
     rtsp::PlaybackStats stats;
     auto pending = makeVideoFrame(1.0, false, 3000);
     buffer.push(makeVideoFrame(2.0, false, 2000));
-    auto decision = sync.synchronize(0, pending, buffer, true, stats);
+    auto decision = sync.synchronize(0, pending, buffer, legacyAudioClock(true), stats);
     require(decision.type == rtsp::SyncDecision::Type::WaitingForNewerFrame && !pending &&
                 decision.catchUpFrames == 1 && stats.syncDroppedFrames == 2,
             "exhausting stale replacements should clear the pending frame and retain drop counts");
@@ -762,7 +793,7 @@ void testMultiStreamSyncWaitsForReadyReplacement() {
     rtsp::JitterBuffer delayedBuffer(4, 1000, false);
     delayedBuffer.push(makeVideoFrame(4.0));
     pending = makeVideoFrame(3.0, false, 3000);
-    decision = sync.synchronize(0, pending, delayedBuffer, true, stats);
+    decision = sync.synchronize(0, pending, delayedBuffer, legacyAudioClock(true), stats);
     require(decision.type == rtsp::SyncDecision::Type::WaitingForNewerFrame && !pending &&
                 decision.catchUpFrames == 0 && delayedBuffer.size() == 1,
             "catch-up must respect the jitter buffer release deadline");
@@ -770,9 +801,166 @@ void testMultiStreamSyncWaitsForReadyReplacement() {
     options.lateDropMs = 0;
     rtsp::MultiStreamSyncController noDrop(options, 50);
     pending = makeVideoFrame(3.0, false, 3000);
-    require(noDrop.synchronize(0, pending, delayedBuffer, true, stats).type ==
+    require(noDrop.synchronize(0, pending, delayedBuffer, legacyAudioClock(true), stats).type ==
                 rtsp::SyncDecision::Type::Render && pending && stats.syncDroppedFrames == 3,
             "disabling late drops should render even an overdue pending frame");
+}
+
+void setPacketReference(AVPacket& packet, int64_t pts, int64_t unixMicroseconds) {
+    av_packet_unref(&packet);
+    packet.pts = pts;
+    auto* data = av_packet_new_side_data(&packet, AV_PKT_DATA_PRFT, sizeof(AVProducerReferenceTime));
+    require(data != nullptr, "PRFT side data should allocate");
+    AVProducerReferenceTime reference{unixMicroseconds, 24};
+    std::memcpy(data, &reference, sizeof(reference));
+}
+
+void testSenderClockMappingIndependentOriginsAndReset() {
+    constexpr int64_t unixUs = 1'700'000'000'000'000;
+    rtsp::SenderClockMapper video;
+    rtsp::SenderClockMapper audio;
+    AVPacket packet{};
+    packet.pts = AV_NOPTS_VALUE;
+    require(!video.observePacket(packet, 1.0 / 90000.0) && !video.referenceTime(10.0),
+            "no sender reference must remain explicitly unavailable");
+    setPacketReference(packet, 900000, unixUs);
+    require(video.observePacket(packet, 1.0 / 90000.0), "video PRFT should establish its mapping");
+    setPacketReference(packet, -96000, unixUs);
+    require(audio.observePacket(packet, 1.0 / 48000.0), "negative audio PTS is a valid timeline origin");
+    require(std::abs(*video.referenceTime(10.25) - *audio.referenceTime(-1.75)) < 1e-6,
+            "different PTS origins and clock rates must map to the same common time");
+    setPacketReference(packet, 990000, unixUs + 1'000'000);
+    require(video.observePacket(packet, 1.0 / 90000.0) &&
+                std::abs(*video.referenceTime(11.25) - (1700000000.0 + 1.25)) < 1e-6,
+            "subsequent sender references must update the mapping without losing elapsed time");
+    setPacketReference(packet, 0, 0);
+    require(!video.observePacket(packet, 1.0 / 90000.0) && video.hasMapping(),
+            "invalid sender time must not replace a good mapping");
+    require(!video.referenceTime(std::numeric_limits<double>::quiet_NaN()),
+            "invalid source PTS must not yield a fabricated common timestamp");
+    video.reset();
+    require(!video.hasMapping() && !video.referenceTime(11.25),
+            "reconnect must discard the previous connection's sender mapping");
+    setPacketReference(packet, 0, unixUs + 60'000'000);
+    require(video.observePacket(packet, 1.0 / 90000.0) &&
+                std::abs(*video.referenceTime(0.0) - 1700000060.0) < 1e-6,
+            "a restarted stream with PTS zero must establish a new absolute origin");
+    av_packet_unref(&packet);
+}
+
+void testAudioReferenceClockTracksQueueHead() {
+    rtsp::AudioPlaybackTiming timing({true, 30, 800, 1500});
+    timing.resetForDevice();
+    timing.noteQueuedFrame(0.0, 0.02);
+    timing.noteQueuedFrame(0.02, 0.02, 1000.02);
+    require(!timing.referenceClockSeconds(0.04), "paused device must not publish a reference playback clock");
+    timing.startIfReady(40);
+    require(!timing.referenceClockSeconds(0.035),
+            "mapped tail data must not pretend that the unreferenced queue head is synchronized");
+    require(std::abs(*timing.referenceClockSeconds(0.015) - 1000.025) < 1e-9,
+            "reference clock must become available when playback reaches mapped samples");
+    timing.trimPlayedFrames(0.015);
+    timing.noteQueuedFrame(10.0, 0.02, 2000.0);
+    require(std::abs(*timing.referenceClockSeconds(0.03) - 1000.03) < 1e-9,
+            "a discontinuous newly queued segment must not jump the clock before it plays");
+    require(std::abs(*timing.referenceClockSeconds(0.01) - 2000.01) < 1e-9,
+            "the clock must switch origins at the actual audio segment boundary");
+    timing.resetQueue(0.0);
+    require(!timing.referenceClockSeconds(0.0), "hard reset must clear old reference segments");
+    timing.noteQueuedFrame(0.0, 0.02, 3000.0);
+    require(std::abs(*timing.referenceClockSeconds(0.02) - 3000.0) < 1e-9,
+            "hard reset must establish a clock from the new queue only");
+    timing.reset();
+    require(!timing.referenceClockSeconds(0.0), "disconnect must invalidate the reference audio clock");
+}
+
+void testTimestampSyncAllStreamsAndCatchUp() {
+    rtsp::SyncOptions options;
+    options.audioOffsetMs = 700;
+    rtsp::MultiStreamSyncController sync(options, 50);
+    rtsp::AudioClockSnapshot audio{true, true, 20.0, 1000.0};
+    rtsp::JitterBuffer buffer(4, 0);
+    rtsp::PlaybackStats stats;
+    auto pending = makeVideoFrame(100.0, false, 3000);
+    pending->referenceTimeSeconds = 1000.0;
+    auto decision = sync.synchronize(0, pending, buffer, audio, stats);
+    require(decision.type == rtsp::SyncDecision::Type::Render && stats.timestampSyncActive,
+            "common time must supersede raw PTS origins, receive age and the legacy 700ms offset");
+    pending->referenceTimeSeconds = 1000.2;
+    decision = sync.synchronize(1, pending, buffer, audio, stats);
+    require(decision.type == rtsp::SyncDecision::Type::Wait && decision.waitMs == 16 &&
+                stats.avSyncDiffMs == 200 && stats.timestampSyncActive,
+            "USB and other secondary streams must wait against the same audio reference clock");
+    pending->referenceTimeSeconds = 999.0;
+    auto replacement = makeVideoFrame(101.0);
+    replacement->referenceTimeSeconds = 1000.2;
+    buffer.push(replacement);
+    decision = sync.synchronize(1, pending, buffer, audio, stats);
+    require(decision.type == rtsp::SyncDecision::Type::Wait && pending == replacement &&
+                stats.syncDroppedFrames == 1 && decision.catchUpFrames == 1,
+            "late catch-up must recheck the replacement and wait if it is now ahead of audio");
+    pending->referenceTimeSeconds = 999.0;
+    decision = sync.synchronize(1, pending, buffer, audio, stats);
+    require(decision.type == rtsp::SyncDecision::Type::WaitingForNewerFrame && !pending &&
+                stats.syncDroppedFrames == 2,
+            "an exhausted late stream must clear its pending frame without disrupting other streams");
+}
+
+void testTimestampSyncMissingMappingsAndDisabledMode() {
+    rtsp::SyncOptions options;
+    options.audioOffsetMs = 700;
+    rtsp::MultiStreamSyncController sync(options, 50);
+    rtsp::AudioClockSnapshot audio{true, true, 20.0, 1000.0};
+    rtsp::JitterBuffer buffer(4, 0);
+    rtsp::PlaybackStats stats;
+    auto pending = makeVideoFrame(100.0);
+    auto decision = sync.synchronize(0, pending, buffer, audio, stats);
+    require(decision.type == rtsp::SyncDecision::Type::Render && !stats.timestampSyncActive &&
+                stats.avSyncDiffMs == 0,
+            "missing video mapping must render independently without fabricated receive-time synchronization");
+    pending->referenceTimeSeconds = 1000.1;
+    audio.referenceTimeSeconds.reset();
+    require(sync.synchronize(1, pending, buffer, audio, stats).type == rtsp::SyncDecision::Type::Render &&
+                !stats.timestampSyncActive, "audio reconnect must stop reference sync until a new mapping is available");
+    audio.referenceTimeSeconds = 1000.0;
+    audio.active = false;
+    require(sync.synchronize(0, pending, buffer, audio, stats).type == rtsp::SyncDecision::Type::Render &&
+                !stats.timestampSyncActive, "audio prebuffer must not act as an advancing playback clock");
+    audio.active = true;
+    options.enabled = false;
+    rtsp::MultiStreamSyncController disabled(options, 50);
+    require(disabled.synchronize(0, pending, buffer, audio, stats).type == rtsp::SyncDecision::Type::Render &&
+                !stats.timestampSyncActive, "the explicit synchronization switch must still disable all waits");
+}
+
+void testTimestampSyncCommandLineOverride() {
+    rtsp::AppConfig config;
+    config.syncOptions.enabled = false;
+    config.syncOptions.mode = rtsp::SyncMode::ReceiveTime;
+    const char* args[] = {"rtsp_player", "--timestamp-sync", "rtsp://localhost/video", "rtsp://localhost/usb"};
+    rtsp::applyCommandLineOverrides(config, 4, const_cast<char**>(args));
+    require(config.syncOptions.enabled && config.syncOptions.mode == rtsp::SyncMode::Timestamp &&
+                config.rtspUrls.size() == 2 && config.rtspUrls.front() == "rtsp://localhost/video",
+            "timestamp flag must override sync settings without becoming an RTSP URL");
+}
+
+void testSyncModeYamlSelection() {
+    const auto path = tempYamlPath("rtsp_sync_mode_test.yaml");
+    {
+        std::ofstream yaml(path);
+        yaml << "sync:\n  enabled: true\n  mode: receive_time\n";
+    }
+    const auto legacy = rtsp::loadAppConfig(path.string());
+    require(legacy.syncOptions.mode == rtsp::SyncMode::ReceiveTime,
+            "YAML must allow explicit use of the old receive-time mode");
+    {
+        std::ofstream yaml(path);
+        yaml << "sync:\n  mode: timestamp\n";
+    }
+    const auto timestamp = rtsp::loadAppConfig(path.string());
+    std::filesystem::remove(path);
+    require(timestamp.syncOptions.mode == rtsp::SyncMode::Timestamp,
+            "YAML must select sender timestamp synchronization");
 }
 
 void runTest(const std::string& name, void (*test)()) {
@@ -818,6 +1006,12 @@ int main() {
         runTest("Multi-stream sync preserves bypassed and on-time frames", testMultiStreamSyncBypassAndOnTimeFrames);
         runTest("Multi-stream sync catches up until the deadline", testMultiStreamSyncCatchesUpUntilDeadline);
         runTest("Multi-stream sync waits for a ready replacement", testMultiStreamSyncWaitsForReadyReplacement);
+        runTest("Sender clocks map independent origins and reset", testSenderClockMappingIndependentOriginsAndReset);
+        runTest("Audio reference clock tracks the queue head", testAudioReferenceClockTracksQueueHead);
+        runTest("Timestamp sync aligns all streams and catches up", testTimestampSyncAllStreamsAndCatchUp);
+        runTest("Timestamp sync handles missing mappings and disabled mode", testTimestampSyncMissingMappingsAndDisabledMode);
+        runTest("Timestamp sync command-line override", testTimestampSyncCommandLineOverride);
+        runTest("Sync mode YAML selection", testSyncModeYamlSelection);
     } catch (const std::exception& e) {
         std::cerr << "[FAIL] " << e.what() << '\n';
         return EXIT_FAILURE;

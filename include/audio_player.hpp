@@ -39,6 +39,7 @@ public:
 
     bool hasClock() const;
     double clockSeconds() const;
+    AudioClockSnapshot clockSnapshot() const;
     uint32_t queuedMs() const;
     AudioPlaybackStats getStats() const;
 

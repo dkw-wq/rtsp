@@ -1,5 +1,7 @@
 #pragma once
 
+#include <mutex>
+
 #include "audio_player.hpp"
 #include "jitter_buffer.hpp"
 #include "rtsp_client.hpp"
@@ -61,6 +63,8 @@ public:
 
 private:
     StreamSessionOptions options_;
+    std::mutex audioForwardMutex_;
+    bool forwardAudioToPlayer_;
     std::unique_ptr<RtspClient> client_;
     std::unique_ptr<JitterBuffer> jitterBuffer_;
     uint64_t receivedFramesSinceFpsUpdate_ = 0;

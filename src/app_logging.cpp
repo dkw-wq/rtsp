@@ -98,6 +98,9 @@ void logConfig(const AppConfig& config) {
                 config.syncOptions.maxWaitMs,
                 config.syncOptions.lateDropMs,
                 config.syncOptions.audioOffsetMs);
+    SPDLOG_INFO("A/V sync mode: {}", config.syncOptions.mode == SyncMode::Timestamp ?
+                "timestamp (all mapped video streams; audio_offset_ms ignored)" :
+                "receive_time (primary video delay compensation)");
     SPDLOG_INFO("Reconnect: enabled={}, initial_delay_ms={}, max_delay_ms={}",
                 config.reconnectOptions.enabled,
                 config.reconnectOptions.initialDelayMs,

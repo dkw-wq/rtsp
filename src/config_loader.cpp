@@ -5,6 +5,7 @@
 #include <exception>
 
 #include <yaml-cpp/yaml.h>
+#include <spdlog/spdlog.h>
 
 namespace rtsp {
 
@@ -231,6 +232,16 @@ AppConfig loadAppConfig(const std::string& path) {
             if (syncConfig["enabled"]) {
                 config.syncOptions.enabled = syncConfig["enabled"].as<bool>();
             }
+            if (syncConfig["mode"]) {
+                const auto mode = toLower(syncConfig["mode"].as<std::string>());
+                if (mode == "timestamp") {
+                    config.syncOptions.mode = SyncMode::Timestamp;
+                } else if (mode == "receive_time") {
+                    config.syncOptions.mode = SyncMode::ReceiveTime;
+                } else {
+                    SPDLOG_WARN("Unknown sync mode '{}'; using timestamp", mode);
+                }
+            }
             assignNonNegativeInt(syncConfig, "max_wait_ms", config.syncOptions.maxWaitMs);
             assignPositiveInt(syncConfig, "late_drop_ms", config.syncOptions.lateDropMs);
             if (syncConfig["audio_offset_ms"]) {
@@ -313,6 +324,11 @@ void applyCommandLineOverrides(AppConfig& config, int argc, char* argv[]) {
 
     for (int index = 1; index < argc; ++index) {
         const std::string argument = argv[index];
+        if (argument == "--timestamp-sync") {
+            config.syncOptions.enabled = true;
+            config.syncOptions.mode = SyncMode::Timestamp;
+            continue;
+        }
         constexpr const char* faceDetectionPrefix = "--face-detection=";
         constexpr size_t faceDetectionPrefixLength = 17;
 

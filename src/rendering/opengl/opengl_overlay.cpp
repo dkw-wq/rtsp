@@ -32,7 +32,8 @@ std::array<std::string, 18> OpenGlVideoRenderer::makeOverlayLines() const {
         "AUDIO: " + std::string(playbackStats_.audioActive ? "ON " : "OFF ") +
             std::to_string(playbackStats_.audioQueueMs) + "MS",
         "AUDIO DROP: " + std::to_string(playbackStats_.audioDroppedFrames),
-        "AV DIFF: " + std::to_string(playbackStats_.avSyncDiffMs) + "MS",
+        "AV DIFF: " + std::to_string(playbackStats_.avSyncDiffMs) + "MS" +
+            (playbackStats_.timestampSyncActive ? " TS" : ""),
         "FILTER: " + filterPipeline_.describe(),
         "REC DROP: " + std::to_string(recorder_.droppedFrames()),
         recorder_.isRecording() ? "REC: ON" : "REC: OFF"

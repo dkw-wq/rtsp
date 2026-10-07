@@ -199,13 +199,16 @@ int runMultiStreamImpl(const rtsp::AppConfig& config) {
     std::vector<std::unique_ptr<rtsp::StreamSession>> streams;
     streams.reserve(streamCount);
     std::vector<MultiStreamRuntime> streamRuntimes(streamCount);
+    const bool useSeparateAudio = config.audioOptions.enabled && !config.audioRtspUrl.empty();
 
     for (size_t index = 0; index < streamCount; ++index) {
         rtsp::StreamSessionOptions options;
         options.url = config.rtspUrls[index];
         options.connectionOptions = config.rtspOptions;
         options.hardwareDecodeBackend = config.hwDecodeBackend;
-        options.audioEnabled = false;
+        options.audioEnabled = index == 0 && config.audioOptions.enabled;
+        options.forwardAudioToPlayer = index == 0 && config.audioOptions.enabled && !useSeparateAudio;
+        options.audioPlayer = audioPlayer.get();
         options.videoEnabled = true;
 #ifdef RTSP_ENABLE_CUDA_INTEROP
         options.hardwareFrameOutput = usesOpenGlRenderer || usesVulkanRenderer;
@@ -221,7 +224,6 @@ int runMultiStreamImpl(const rtsp::AppConfig& config) {
     }
 
     std::unique_ptr<rtsp::StreamSession> audioStream;
-    const bool useSeparateAudio = config.audioOptions.enabled && !config.audioRtspUrl.empty();
     if (useSeparateAudio) {
         rtsp::StreamSessionOptions options;
         options.url = config.audioRtspUrl;
@@ -280,11 +282,12 @@ int runMultiStreamImpl(const rtsp::AppConfig& config) {
             scheduleAudioReconnect();
             return false;
         }
+        streams.front()->setForwardAudioToPlayer(false);
+        audioPlayer->reset();
         audioStream->start();
         separateAudioRunning = true;
         audioReconnectDelayMs =
             std::max<uint32_t>(config.reconnectOptions.initialDelayMs, 1);
-        streams.front()->setForwardAudioToPlayer(false);
         SPDLOG_INFO("Separate audio RTSP started: {}", config.audioRtspUrl);
         return true;
     };
@@ -340,12 +343,13 @@ int runMultiStreamImpl(const rtsp::AppConfig& config) {
     while (g_running && renderer->handleEvents()) {
         bool hasNewVideoFrame = false;
         bool topologyChanged = false;
-        bool waitingForSync = false;
+        int syncWaitMs = 0;
         const auto loopNow = std::chrono::steady_clock::now();
 
         if (audioStream && separateAudioRunning && !audioStream->isRunning()) {
             SPDLOG_WARN("Separate audio RTSP receive loop stopped");
             audioStream->stopAndDisconnect();
+            audioPlayer->reset();
             separateAudioRunning = false;
             streams.front()->setForwardAudioToPlayer(config.audioOptions.enabled);
             scheduleAudioReconnect();
@@ -371,7 +375,7 @@ int runMultiStreamImpl(const rtsp::AppConfig& config) {
                                   runtime,
                                   config.reconnectOptions,
                                   true);
-                if (index == 0) {
+                if (index == 0 && !separateAudioRunning) {
                     audioPlayer->reset();
                 }
                 continue;
@@ -388,12 +392,11 @@ int runMultiStreamImpl(const rtsp::AppConfig& config) {
             if (stream.pendingFrame) {
                 const auto decision = sync.synchronize(
                     index, stream.pendingFrame, stream.jitterBuffer(),
-                    audioPlayer->hasClock(), stream.stats);
+                    audioPlayer->clockSnapshot(), stream.stats);
                 stream.noteInputFrame(decision.catchUpFrames);
                 if (decision.type == rtsp::SyncDecision::Type::Wait) {
-                    std::this_thread::sleep_for(std::chrono::milliseconds(decision.waitMs));
-                    waitingForSync = true;
-                    break;
+                    syncWaitMs = syncWaitMs == 0 ? decision.waitMs : std::min(syncWaitMs, decision.waitMs);
+                    continue;
                 }
                 if (decision.type == rtsp::SyncDecision::Type::WaitingForNewerFrame) {
                     continue;
@@ -417,10 +420,6 @@ int runMultiStreamImpl(const rtsp::AppConfig& config) {
         if (!g_running) {
             break;
         }
-        if (waitingForSync) {
-            continue;
-        }
-
         std::vector<std::shared_ptr<rtsp::MediaFrame>> frames;
         frames.reserve(streamCount);
         std::vector<size_t> originalToActiveSlot(streamCount, std::numeric_limits<size_t>::max());
@@ -490,7 +489,7 @@ int runMultiStreamImpl(const rtsp::AppConfig& config) {
             }
         }
 
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        std::this_thread::sleep_for(std::chrono::milliseconds(syncWaitMs > 0 ? syncWaitMs : 1));
     }
 
     finishReconnects(streams, streamRuntimes);
